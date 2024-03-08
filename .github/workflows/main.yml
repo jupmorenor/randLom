@@ -1,0 +1,38 @@
+name: CI
+
+on: 
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+          matrix:
+            python-version: [3.x]
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: location 
+        run: pwd && ls 
+
+      - name: Install PyInstaler
+        run: pip install pyinstaller
+
+      - name: Build app
+        run: python -m PyInstaller srm.py --onefile --windowed --name "randLom"
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/randLom.exe

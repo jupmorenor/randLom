@@ -1,0 +1,11 @@
+
+*.pyc
+*.spec
+output
+__pycache__
+build
+*.bat
+README (Engine).md
+Readme (Tutorial).md
+Template (Amazing Mirror).py
+Template (Tutorial).py
