@@ -29,7 +29,7 @@ jobs:
         run: python -m PyInstaller srm.py --onefile --windowed --name "randLom"
 
       - name: location
-        run: pwd && ls
+        run: cd dist && pwd && ls
 
       - name: Release
         uses: softprops/action-gh-release@v1
