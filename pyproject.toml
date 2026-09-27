@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "randlom"
+version = "0.1.0"
+description = "Aplicación de escritorio mínima con PyQt6"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PyQt6>=6.7"]
+
+[project.scripts]
+randlom = "randlom.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/randlom"]

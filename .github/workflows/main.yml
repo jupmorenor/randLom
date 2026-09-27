@@ -1,0 +1,92 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-latest
+            asset: RandLom-windows-x64.zip
+            artifact: randlom-windows-x64
+          - platform: linux-x64
+            runner: ubuntu-latest
+            asset: RandLom-linux-x64.tar.gz
+            artifact: randlom-linux-x64
+          - platform: macos-arm64
+            runner: macos-latest
+            asset: RandLom-macos-arm64.zip
+            artifact: randlom-macos-arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade PyInstaller PyQt6
+
+      - name: Build Windows or Linux executable
+        if: matrix.platform != 'macos-arm64'
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name RandLom main.py
+
+      - name: Build macOS app bundle
+        if: matrix.platform == 'macos-arm64'
+        run: python -m PyInstaller --noconfirm --clean --windowed --name RandLom main.py
+
+      - name: Package Windows executable
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: Compress-Archive -Path dist/RandLom.exe -DestinationPath dist/${{ matrix.asset }}
+
+      - name: Package Linux executable
+        if: matrix.platform == 'linux-x64'
+        run: tar -czf dist/${{ matrix.asset }} -C dist RandLom
+
+      - name: Package macOS app bundle
+        if: matrix.platform == 'macos-arm64'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/RandLom.app dist/${{ matrix.asset }}
+
+      - name: Upload platform package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download platform packages
+        uses: actions/download-artifact@v7
+        with:
+          pattern: randlom-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
