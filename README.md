@@ -10,7 +10,7 @@ RandLom es una aplicación de escritorio para preparar una imagen de *Legend of 
 4. RandLom extrae los archivos en `legend_of_mana`, dentro de la carpeta de la aplicación, y solicita dónde guardar la imagen resultante.
 5. Al terminar, muestra la ruta de la imagen generada (`legend_of_mana.bin` y `legend_of_mana.cue`).
 
-La semilla queda preparada para los procesos de aleatorización que se incorporarán al flujo. Esos procesos todavía no están implementados.
+La aplicación permite activar por separado la aleatorización de cofres y la aleatorización local de enemigos. El modo local intercambia las identidades de enemigos estáticos dentro de cada escena, manteniendo juntos su plantilla de batalla, recurso gráfico/de acciones y paleta. No mueve enemigos entre escenas ni afecta a los que aparecen dinámicamente mediante scripts.
 
 RandLom descarga la versión más reciente de **mkpsxiso** desde sus lanzamientos de GitHub la primera vez que se genera una imagen, y reutiliza los archivos descargados en ejecuciones posteriores.
 

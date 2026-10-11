@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -18,7 +19,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.core import construir_imagen, generar as extraer_imagen
+from src.core import (
+    aleatorizar_cofres,
+    aleatorizar_enemigos_local,
+    construir_imagen,
+    generar as extraer_imagen,
+)
 from src.mkpsxiso import ensure_mkpsxiso, mkpsxiso_is_installed
 
 PS1_IMAGE_EXTENSIONS = {
@@ -37,15 +43,25 @@ class _ExtractionWorker(QThread):
     succeeded = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, image_path: Path, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, image_path: Path, semilla: int, aleatorizar_cofres_activo: bool,
+        aleatorizar_enemigos_local_activo: bool, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self.image_path = image_path
+        self.semilla = semilla
+        self.aleatorizar_cofres_activo = aleatorizar_cofres_activo
+        self.aleatorizar_enemigos_local_activo = aleatorizar_enemigos_local_activo
 
     def run(self) -> None:
         try:
             root = application_root()
             ensure_mkpsxiso(root)
             extracted_directory = extraer_imagen(self.image_path, root)
+            if self.aleatorizar_cofres_activo:
+                aleatorizar_cofres(extracted_directory, self.semilla)
+            if self.aleatorizar_enemigos_local_activo:
+                aleatorizar_enemigos_local(extracted_directory, self.semilla)
             self.succeeded.emit(str(extracted_directory))
         except Exception as error:
             self.failed.emit(str(error))
@@ -107,12 +123,21 @@ class MainWindow(QMainWindow):
         seed_layout.addWidget(self.seed_label)
         seed_layout.addStretch()
 
+        self.randomize_chests_checkbox = QCheckBox("Aleatorizar cofres")
+        self.randomize_chests_checkbox.setChecked(False)
+        self.randomize_enemies_local_checkbox = QCheckBox(
+            "Aleatorizar enemigos (local)"
+        )
+        self.randomize_enemies_local_checkbox.setChecked(False)
+
         self.generate_button = QPushButton("Generar")
         self.generate_button.clicked.connect(self.generar)
 
         layout = QVBoxLayout()
         layout.addLayout(file_layout)
         layout.addLayout(seed_layout)
+        layout.addWidget(self.randomize_chests_checkbox)
+        layout.addWidget(self.randomize_enemies_local_checkbox)
         layout.addWidget(self.generate_button)
         layout.addStretch()
 
@@ -186,7 +211,13 @@ class MainWindow(QMainWindow):
         # 5. Extraer siempre en la carpeta legend_of_mana del proyecto.
         self.generate_button.setEnabled(False)
         self.statusBar().showMessage("Extrayendo los archivos de la imagen…")
-        self._extraction_worker = _ExtractionWorker(selected_file, self)
+        self._extraction_worker = _ExtractionWorker(
+            selected_file,
+            self.semilla,
+            self.randomize_chests_checkbox.isChecked(),
+            self.randomize_enemies_local_checkbox.isChecked(),
+            self,
+        )
         self._extraction_worker.succeeded.connect(self._extraction_succeeded)
         self._extraction_worker.failed.connect(self._generation_failed)
         self._extraction_worker.start()
