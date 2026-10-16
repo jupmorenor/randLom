@@ -8,6 +8,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -20,8 +21,10 @@ from PyQt6.QtWidgets import (
 )
 
 from src.core import (
+    aleatorizar_botines_objetos,
+    aleatorizar_materiales_botines_equipamento,
     aleatorizar_cofres,
-    aleatorizar_enemigos_local,
+    aleatorizar_cofres_y_botines_objetos,
     construir_imagen,
     generar as extraer_imagen,
 )
@@ -40,29 +43,55 @@ def application_root() -> Path:
 
 
 class _ExtractionWorker(QThread):
-    succeeded = pyqtSignal(str)
+    succeeded = pyqtSignal(str, int, int, int)
     failed = pyqtSignal(str)
 
     def __init__(
-        self, image_path: Path, semilla: int, aleatorizar_cofres_activo: bool,
-        aleatorizar_enemigos_local_activo: bool, parent: QWidget | None = None
+        self,
+        image_path: Path,
+        semilla: int,
+        aleatorizar_cofres_activo: bool,
+        aleatorizar_botines_objetos_activo: bool,
+        aleatorizar_botines_equipamento_activo: bool,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.image_path = image_path
         self.semilla = semilla
         self.aleatorizar_cofres_activo = aleatorizar_cofres_activo
-        self.aleatorizar_enemigos_local_activo = aleatorizar_enemigos_local_activo
+        self.aleatorizar_botines_objetos_activo = aleatorizar_botines_objetos_activo
+        self.aleatorizar_botines_equipamento_activo = (
+            aleatorizar_botines_equipamento_activo
+        )
 
     def run(self) -> None:
         try:
             root = application_root()
             ensure_mkpsxiso(root)
             extracted_directory = extraer_imagen(self.image_path, root)
-            if self.aleatorizar_cofres_activo:
-                aleatorizar_cofres(extracted_directory, self.semilla)
-            if self.aleatorizar_enemigos_local_activo:
-                aleatorizar_enemigos_local(extracted_directory, self.semilla)
-            self.succeeded.emit(str(extracted_directory))
+            chests_changed = 0
+            item_drops_changed = 0
+            equipment_drops_changed = 0
+            if self.aleatorizar_cofres_activo and self.aleatorizar_botines_objetos_activo:
+                chests_changed, item_drops_changed = aleatorizar_cofres_y_botines_objetos(
+                    extracted_directory, self.semilla
+                )
+            elif self.aleatorizar_cofres_activo:
+                chests_changed = aleatorizar_cofres(
+                    extracted_directory, self.semilla
+                )
+            elif self.aleatorizar_botines_objetos_activo:
+                item_drops_changed = aleatorizar_botines_objetos(
+                    extracted_directory, self.semilla
+                )
+            if self.aleatorizar_botines_equipamento_activo:
+                equipment_drops_changed = aleatorizar_materiales_botines_equipamento(
+                    extracted_directory, self.semilla
+                )
+            self.succeeded.emit(
+                str(extracted_directory), chests_changed, item_drops_changed,
+                equipment_drops_changed,
+            )
         except Exception as error:
             self.failed.emit(str(error))
 
@@ -123,12 +152,23 @@ class MainWindow(QMainWindow):
         seed_layout.addWidget(self.seed_label)
         seed_layout.addStretch()
 
-        self.randomize_chests_checkbox = QCheckBox("Aleatorizar cofres")
-        self.randomize_chests_checkbox.setChecked(False)
-        self.randomize_enemies_local_checkbox = QCheckBox(
-            "Aleatorizar enemigos (local)"
+        self.randomize_objects_checkbox = QCheckBox("Aleatorizar Objetos")
+        self.randomize_objects_checkbox.setChecked(False)
+
+        self.object_randomization_group = QGroupBox("Tipos de objetos")
+        object_randomization_layout = QVBoxLayout(self.object_randomization_group)
+        self.randomize_chests_checkbox = QCheckBox("Cofres")
+        self.randomize_item_drops_checkbox = QCheckBox("Botines de objetos")
+        self.randomize_equipment_drops_checkbox = QCheckBox(
+            "Botines de equipamento"
         )
-        self.randomize_enemies_local_checkbox.setChecked(False)
+        object_randomization_layout.addWidget(self.randomize_chests_checkbox)
+        object_randomization_layout.addWidget(self.randomize_item_drops_checkbox)
+        object_randomization_layout.addWidget(self.randomize_equipment_drops_checkbox)
+        self.object_randomization_group.setVisible(False)
+        self.randomize_objects_checkbox.toggled.connect(
+            self.object_randomization_group.setVisible
+        )
 
         self.generate_button = QPushButton("Generar")
         self.generate_button.clicked.connect(self.generar)
@@ -136,8 +176,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addLayout(file_layout)
         layout.addLayout(seed_layout)
-        layout.addWidget(self.randomize_chests_checkbox)
-        layout.addWidget(self.randomize_enemies_local_checkbox)
+        layout.addWidget(self.randomize_objects_checkbox)
+        layout.addWidget(self.object_randomization_group)
         layout.addWidget(self.generate_button)
         layout.addStretch()
 
@@ -214,15 +254,28 @@ class MainWindow(QMainWindow):
         self._extraction_worker = _ExtractionWorker(
             selected_file,
             self.semilla,
-            self.randomize_chests_checkbox.isChecked(),
-            self.randomize_enemies_local_checkbox.isChecked(),
+            self.randomize_objects_checkbox.isChecked()
+            and self.randomize_chests_checkbox.isChecked(),
+            self.randomize_objects_checkbox.isChecked()
+            and self.randomize_item_drops_checkbox.isChecked(),
+            self.randomize_objects_checkbox.isChecked()
+            and self.randomize_equipment_drops_checkbox.isChecked(),
             self,
         )
         self._extraction_worker.succeeded.connect(self._extraction_succeeded)
         self._extraction_worker.failed.connect(self._generation_failed)
         self._extraction_worker.start()
 
-    def _extraction_succeeded(self, extracted_directory: str) -> None:
+    def _extraction_succeeded(
+        self,
+        extracted_directory: str,
+        chests_changed: int,
+        item_drops_changed: int,
+        equipment_drops_changed: int,
+    ) -> None:
+        self._chests_changed = chests_changed
+        self._item_drops_changed = item_drops_changed
+        self._equipment_drops_changed = equipment_drops_changed
         # 6. Aquí se añadirán los procesos intermedios pendientes.
         # 7. Pedir la carpeta de salida justo antes de construir la imagen.
         output_directory = QFileDialog.getExistingDirectory(
@@ -249,10 +302,22 @@ class MainWindow(QMainWindow):
         # 8. Informar que terminó y mostrar dónde se guardó la imagen.
         self.generate_button.setEnabled(True)
         self.statusBar().showMessage("Imagen de disco construida", 10000)
+        object_summary = ""
+        if getattr(self, "_chests_changed", 0):
+            object_summary += f"\nCofres cambiados: {self._chests_changed}."
+        if getattr(self, "_item_drops_changed", 0):
+            object_summary += (
+                f"\nBotines de objetos cambiados: {self._item_drops_changed}."
+            )
+        if getattr(self, "_equipment_drops_changed", 0):
+            object_summary += (
+                "\nMateriales de botines de equipamento cambiados: "
+                f"{self._equipment_drops_changed}."
+            )
         QMessageBox.information(
             self,
             "Generación completada",
-            f"La imagen de disco se creó en:\n{output_image}",
+            f"La imagen de disco se creó en:\n{output_image}{object_summary}",
         )
 
     def _generation_failed(self, message: str) -> None:
