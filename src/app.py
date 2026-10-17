@@ -25,6 +25,8 @@ from src.core import (
     aleatorizar_materiales_botines_equipamento,
     aleatorizar_cofres,
     aleatorizar_cofres_y_botines_objetos,
+    aleatorizar_materiales_tiendas_equipamento,
+    aleatorizar_tiendas_objetos_normales,
     construir_imagen,
     generar as extraer_imagen,
 )
@@ -43,7 +45,7 @@ def application_root() -> Path:
 
 
 class _ExtractionWorker(QThread):
-    succeeded = pyqtSignal(str, int, int, int)
+    succeeded = pyqtSignal(str, int, int, int, int, int)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -53,6 +55,8 @@ class _ExtractionWorker(QThread):
         aleatorizar_cofres_activo: bool,
         aleatorizar_botines_objetos_activo: bool,
         aleatorizar_botines_equipamento_activo: bool,
+        aleatorizar_tiendas_objetos_normales_activo: bool,
+        aleatorizar_tiendas_equipamento_activo: bool,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -63,6 +67,12 @@ class _ExtractionWorker(QThread):
         self.aleatorizar_botines_equipamento_activo = (
             aleatorizar_botines_equipamento_activo
         )
+        self.aleatorizar_tiendas_objetos_normales_activo = (
+            aleatorizar_tiendas_objetos_normales_activo
+        )
+        self.aleatorizar_tiendas_equipamento_activo = (
+            aleatorizar_tiendas_equipamento_activo
+        )
 
     def run(self) -> None:
         try:
@@ -72,6 +82,8 @@ class _ExtractionWorker(QThread):
             chests_changed = 0
             item_drops_changed = 0
             equipment_drops_changed = 0
+            normal_shop_slots_changed = 0
+            equipment_shop_items_changed = 0
             if self.aleatorizar_cofres_activo and self.aleatorizar_botines_objetos_activo:
                 chests_changed, item_drops_changed = aleatorizar_cofres_y_botines_objetos(
                     extracted_directory, self.semilla
@@ -88,9 +100,18 @@ class _ExtractionWorker(QThread):
                 equipment_drops_changed = aleatorizar_materiales_botines_equipamento(
                     extracted_directory, self.semilla
                 )
+            if self.aleatorizar_tiendas_objetos_normales_activo:
+                normal_shop_slots_changed = aleatorizar_tiendas_objetos_normales(
+                    extracted_directory, self.semilla
+                )
+            if self.aleatorizar_tiendas_equipamento_activo:
+                equipment_shop_items_changed = aleatorizar_materiales_tiendas_equipamento(
+                    extracted_directory, self.semilla
+                )
             self.succeeded.emit(
                 str(extracted_directory), chests_changed, item_drops_changed,
-                equipment_drops_changed,
+                equipment_drops_changed, normal_shop_slots_changed,
+                equipment_shop_items_changed,
             )
         except Exception as error:
             self.failed.emit(str(error))
@@ -170,6 +191,22 @@ class MainWindow(QMainWindow):
             self.object_randomization_group.setVisible
         )
 
+        self.randomize_shops_checkbox = QCheckBox("Tiendas de objetos")
+        self.shop_randomization_group = QGroupBox("Tipos de tienda")
+        shop_randomization_layout = QVBoxLayout(self.shop_randomization_group)
+        self.randomize_normal_shops_checkbox = QCheckBox(
+            "Tiendas de objetos normales"
+        )
+        self.randomize_equipment_shops_checkbox = QCheckBox(
+            "Tiendas de equipamento"
+        )
+        shop_randomization_layout.addWidget(self.randomize_normal_shops_checkbox)
+        shop_randomization_layout.addWidget(self.randomize_equipment_shops_checkbox)
+        self.shop_randomization_group.setVisible(False)
+        self.randomize_shops_checkbox.toggled.connect(
+            self.shop_randomization_group.setVisible
+        )
+
         self.generate_button = QPushButton("Generar")
         self.generate_button.clicked.connect(self.generar)
 
@@ -178,6 +215,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(seed_layout)
         layout.addWidget(self.randomize_objects_checkbox)
         layout.addWidget(self.object_randomization_group)
+        layout.addWidget(self.randomize_shops_checkbox)
+        layout.addWidget(self.shop_randomization_group)
         layout.addWidget(self.generate_button)
         layout.addStretch()
 
@@ -260,6 +299,10 @@ class MainWindow(QMainWindow):
             and self.randomize_item_drops_checkbox.isChecked(),
             self.randomize_objects_checkbox.isChecked()
             and self.randomize_equipment_drops_checkbox.isChecked(),
+            self.randomize_shops_checkbox.isChecked()
+            and self.randomize_normal_shops_checkbox.isChecked(),
+            self.randomize_shops_checkbox.isChecked()
+            and self.randomize_equipment_shops_checkbox.isChecked(),
             self,
         )
         self._extraction_worker.succeeded.connect(self._extraction_succeeded)
@@ -272,10 +315,14 @@ class MainWindow(QMainWindow):
         chests_changed: int,
         item_drops_changed: int,
         equipment_drops_changed: int,
+        normal_shop_slots_changed: int,
+        equipment_shop_items_changed: int,
     ) -> None:
         self._chests_changed = chests_changed
         self._item_drops_changed = item_drops_changed
         self._equipment_drops_changed = equipment_drops_changed
+        self._normal_shop_slots_changed = normal_shop_slots_changed
+        self._equipment_shop_items_changed = equipment_shop_items_changed
         # 6. Aquí se añadirán los procesos intermedios pendientes.
         # 7. Pedir la carpeta de salida justo antes de construir la imagen.
         output_directory = QFileDialog.getExistingDirectory(
@@ -313,6 +360,16 @@ class MainWindow(QMainWindow):
             object_summary += (
                 "\nMateriales de botines de equipamento cambiados: "
                 f"{self._equipment_drops_changed}."
+            )
+        if getattr(self, "_normal_shop_slots_changed", 0):
+            object_summary += (
+                "\nSlots de tiendas de objetos normales procesados: "
+                f"{self._normal_shop_slots_changed}."
+            )
+        if getattr(self, "_equipment_shop_items_changed", 0):
+            object_summary += (
+                "\nMateriales y valores derivados de equipamento en tiendas: "
+                f"{self._equipment_shop_items_changed}."
             )
         QMessageBox.information(
             self,

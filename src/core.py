@@ -572,6 +572,310 @@ def aleatorizar_cofres_y_botines_objetos(
     )
 
 
+def _recursos_escena(data: bytes) -> tuple[int, list[tuple[int, bytes]]] | None:
+    """Devuelve recursos de una escena con su offset absoluto dentro del IMG."""
+    if len(data) < 40:
+        return None
+    offsets = struct.unpack_from("<10I", data)
+    if (offsets[0] != 40 or tuple(sorted(offsets)) != offsets
+            or offsets[-1] > len(data)):
+        return None
+
+    records_start, records_end = offsets[4:6]
+    section = data[records_start:records_end]
+    if len(section) < 4:
+        return None
+    directory_size = struct.unpack_from("<I", section)[0]
+    if (directory_size < 4 or directory_size % 4
+            or directory_size > len(section)):
+        return None
+    resource_offsets = struct.unpack_from(
+        f"<{directory_size // 4}I", section
+    )
+    if any(offset < directory_size or offset > len(section) or offset % 4
+           for offset in resource_offsets):
+        return None
+
+    starts = sorted(set(resource_offsets))
+    resources = []
+    for start, end in zip(starts, starts[1:] + [len(section)]):
+        resource = section[start:end]
+        if len(resource) >= 2:
+            resources.append((records_start + start, resource))
+    return records_start, resources
+
+
+def _entradas_tienda(
+    resource: bytes, absolute_offset: int
+) -> list[tuple[int, int]] | None:
+    """Devuelve (offset de palabra, palabra) para cada slot físico de tienda."""
+    if len(resource) < 8:
+        return None
+    directory_size = struct.unpack_from("<I", resource, 4)[0]
+    if (directory_size < 8 or directory_size % 4
+            or directory_size > len(resource)):
+        return None
+    pointers = struct.unpack_from(
+        f"<{directory_size // 4 - 1}I", resource, 4
+    )
+    if any(pointer < directory_size or pointer % 4 or pointer + 4 > len(resource)
+           for pointer in pointers):
+        return None
+
+    entries = []
+    for pointer in sorted(set(pointers)):
+        count = struct.unpack_from("<I", resource, pointer)[0]
+        end = pointer + 4 + count * 4
+        if end > len(resource):
+            return None
+        for index in range(count):
+            entry_offset = absolute_offset + pointer + 4 + index * 4
+            word = struct.unpack_from("<I", resource, pointer + 4 + index * 4)[0]
+            entries.append((entry_offset, word))
+    return entries
+
+
+def aleatorizar_tiendas_objetos_normales(
+    carpeta_proyecto: str | Path, semilla: int
+) -> int:
+    """Permuta objetos normales entre slots de tienda y conserva sus precios."""
+    ana = Path(carpeta_proyecto).expanduser().resolve() / "ANA"
+    if not ana.is_dir():
+        raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
+
+    destinos: list[tuple[Path, int, int]] = []
+    for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG"):
+        for path in sorted(ana.glob(pattern)):
+            if not path.is_file():
+                continue
+            data = path.read_bytes()
+            parsed = _recursos_escena(data)
+            if parsed is None:
+                continue
+            _, resources = parsed
+            for absolute_offset, resource in resources:
+                if struct.unpack_from("<H", resource)[0] != 0x000A:
+                    continue
+                entries = _entradas_tienda(resource, absolute_offset)
+                if entries is None:
+                    continue
+                for offset, word in entries:
+                    # Bit 8=0: el byte bajo es un item kind global, no plantilla.
+                    if not (word & 0x100) and (word & 0xFF) != 0xFF:
+                        destinos.append((path, offset, word))
+
+    if not destinos:
+        raise RuntimeError("No se encontraron slots de objetos normales en tiendas.")
+
+    objetos = [word & 0xFF for _, _, word in destinos]
+    random.Random(semilla).shuffle(objetos)
+    cambios: dict[Path, bytearray] = {}
+    for (path, offset, word), item_id in zip(destinos, objetos):
+        if path not in cambios:
+            cambios[path] = bytearray(path.read_bytes())
+        nueva_palabra = (word & ~0xFF) | item_id
+        struct.pack_into("<I", cambios[path], offset, nueva_palabra)
+
+    for path, data in cambios.items():
+        path.write_bytes(data)
+    return len(destinos)
+
+
+def _tablas_equipo_desde_escenas(ana: Path) -> tuple[bytes, bytes]:
+    """Carga las tablas comunes de armas/armaduras e instrumentos del FIELD."""
+    necesidades = {
+        0x0004: 4 + 32 * 0x0C + 64 * 0x14,
+        0x000F: 4 + 64 + 64 * 4 * 2,
+    }
+    encontrados: dict[int, set[bytes]] = {resource_id: set() for resource_id in necesidades}
+    for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG"):
+        for path in sorted(ana.glob(pattern)):
+            if not path.is_file():
+                continue
+            parsed = _recursos_escena(path.read_bytes())
+            if parsed is None:
+                continue
+            _, resources = parsed
+            for _, resource in resources:
+                resource_id = struct.unpack_from("<H", resource)[0]
+                if resource_id not in necesidades:
+                    continue
+                required_size = necesidades[resource_id]
+                if len(resource) >= required_size:
+                    encontrados[resource_id].add(resource[:required_size])
+
+    for resource_id, tables in encontrados.items():
+        if not tables:
+            raise RuntimeError(
+                f"No se encontró la tabla de generación FIELD 0x{resource_id:04X}."
+            )
+        if len(tables) > 1:
+            raise RuntimeError(
+                f"Se encontraron versiones incompatibles de la tabla FIELD 0x{resource_id:04X}."
+            )
+    return next(iter(encontrados[0x0004])), next(iter(encontrados[0x000F]))
+
+
+def _recalcular_item_equipo(
+    data: bytearray,
+    record_offset: int,
+    info: int,
+    material: int,
+    tabla_item: bytes,
+    tabla_instrumento: bytes,
+) -> None:
+    """Actualiza derivados dependientes del material según las rutinas FIELD."""
+    category = (info >> 8) & 0x3
+    item_type = (info >> 10) & 0x3F
+    if category == 2:
+        if item_type >= 4:
+            return
+        # FieldItemGridTable.pairs[material][instrument_type][1].
+        pair_offset = 4 + 64 + (material * 4 + item_type) * 2
+        data[record_offset + 0x26] = tabla_instrumento[pair_offset + 1]
+        return
+
+    if category not in (0, 1) or item_type >= 16:
+        return
+
+    type_table_offset = 4 + (0 if category == 0 else 16 * 0x0C)
+    type_offset = type_table_offset + item_type * 0x0C
+    material_table_offset = 4 + 32 * 0x0C
+    material_offset = material_table_offset + material * 0x14
+    type_weights = tabla_item[type_offset + 4:type_offset + 8]
+    type_factors = tabla_item[type_offset + 8:type_offset + 12]
+    divisor = struct.unpack_from("<H", tabla_item, material_offset + 2)[0]
+    material_weights = tabla_item[material_offset + 4:material_offset + 8]
+    multipliers = tabla_item[material_offset + 8:material_offset + 12]
+
+    if category == 0:
+        if divisor == 0:
+            return
+        weight = sum(a * b for a, b in zip(type_weights, material_weights))
+        bonus_levels = struct.unpack_from("<I", data, record_offset + 0x18)[0]
+        level_sum = sum((bonus_levels >> shift) & 0xF for shift in range(0, 32, 4))
+        power = ((weight * (level_sum + divisor) // divisor) >> 7) & 0xFFFF
+        # US FIELD clamps derived weapon power at 999.
+        if power >= 1000:
+            power = 999
+        struct.pack_into("<H", data, record_offset + 0x24, power)
+        for index, (factor, multiplier) in enumerate(zip(type_factors, multipliers)):
+            data[record_offset + 0x30 + index] = (factor * multiplier) >> 6
+        return
+
+    for index, (weight, multiplier, factor) in enumerate(
+        zip(type_weights, multipliers, type_factors)
+    ):
+        value = (weight * multiplier) >> 6
+        if value >= 1000:
+            value = 999
+        struct.pack_into("<H", data, record_offset + 0x24 + index * 2, value)
+        data[record_offset + 0x30 + index] = (factor * multiplier) >> 6
+
+
+def aleatorizar_materiales_tiendas_equipamento(
+    carpeta_proyecto: str | Path, semilla: int
+) -> int:
+    """Cambia materiales de armas, armaduras e instrumentos vendidos en tiendas."""
+    ana = Path(carpeta_proyecto).expanduser().resolve() / "ANA"
+    if not ana.is_dir():
+        raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
+
+    tabla_item, tabla_instrumento = _tablas_equipo_desde_escenas(ana)
+    rng = random.Random(semilla)
+    cambios: dict[Path, bytearray] = {}
+    material_offsets: dict[Path, set[int]] = {}
+    for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG"):
+        for path in sorted(ana.glob(pattern)):
+            if not path.is_file():
+                continue
+            data = path.read_bytes()
+            parsed = _recursos_escena(data)
+            if parsed is None:
+                continue
+            _, resources = parsed
+            shop_resources = [
+                (offset, resource)
+                for offset, resource in resources
+                if struct.unpack_from("<H", resource)[0] == 0x000A
+            ]
+            template_resources = [
+                (offset, resource) for offset, resource in resources
+                if struct.unpack_from("<H", resource)[0] == 0x0005
+            ]
+            if not shop_resources or len(template_resources) != 1:
+                continue
+
+            template_offset, templates = template_resources[0]
+            if len(templates) < 4:
+                continue
+            template_count = struct.unpack_from("<H", templates, 2)[0]
+            if 4 + template_count * 0x40 > len(templates):
+                continue
+
+            for shop_offset, shop in shop_resources:
+                entries = _entradas_tienda(shop, shop_offset)
+                if entries is None:
+                    continue
+                for _, word in entries:
+                    if not (word & 0x100):
+                        continue
+                    template_index = word & 0xFF
+                    if template_index >= template_count:
+                        continue
+                    record_offset = (
+                        template_offset + 4 + template_index * 0x40
+                    )
+                    if not any(data[record_offset:record_offset + 0x14]):
+                        continue
+                    info = struct.unpack_from("<I", data, record_offset + 0x14)[0]
+                    category = (info >> 8) & 0x3
+                    if category in (0, 1, 2):
+                        material_offsets.setdefault(path, set()).add(
+                            record_offset + 0x14
+                        )
+
+            for offset in sorted(material_offsets.get(path, set())):
+                if path not in cambios:
+                    cambios[path] = bytearray(data)
+                info = struct.unpack_from("<I", cambios[path], offset)[0]
+                current_material = (info >> 16) & 0x3F
+                category = (info >> 8) & 0x3
+                if category in (0, 1):
+                    material_table_offset = 4 + 32 * 0x0C
+                    candidates = [
+                        value for value in range(64)
+                        if value != current_material
+                        and struct.unpack_from(
+                            "<H", tabla_item,
+                            material_table_offset + value * 0x14 + 2,
+                        )[0] != 0
+                    ]
+                else:
+                    candidates = [
+                        value for value in range(64)
+                        if value != current_material
+                    ]
+                if not candidates:
+                    continue
+                material = rng.choice(candidates)
+                info = (info & ~(0x3F << 16)) | (material << 16)
+                struct.pack_into("<I", cambios[path], offset, info)
+                _recalcular_item_equipo(
+                    cambios[path], offset - 0x14, info, material,
+                    tabla_item, tabla_instrumento,
+                )
+
+    count = sum(len(offsets) for offsets in material_offsets.values())
+    if not count:
+        raise RuntimeError(
+            "No se encontraron objetos de equipamento compatibles en tiendas."
+        )
+    for path, data in cambios.items():
+        path.write_bytes(data)
+    return count
+
+
 def _encontrar_enemigos_escena(
     data: bytes,
 ) -> list[tuple[int, tuple[int, int, int]]]:
