@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup
 from PyQt6.QtWidgets import (
     QCheckBox,
     QButtonGroup,
@@ -16,8 +17,11 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QMenu,
     QPushButton,
     QRadioButton,
+    QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -36,6 +40,7 @@ from src.core import (
     extract_disc_image,
 )
 from src.mkpsxiso import ensure_mkpsxiso, mkpsxiso_is_installed
+from src.lang import get_language, get_text, set_language
 
 PS1_IMAGE_EXTENSIONS = {
     ".cue", ".bin", ".iso", ".img", ".ccd", ".chd", ".mdf", ".mds", ".pbp", ".toc", ".cbn"
@@ -172,40 +177,65 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("RandLom - A Legend of Mana randomizer")
+        self.setWindowTitle(get_text("window_title"))
         self.resize(800, 600)
         self.seed: int | None = None
         self._extraction_worker: _ExtractionWorker | None = None
         self._build_worker: _BuildWorker | None = None
+        self.language_toolbar = QToolBar()
+        self.language_toolbar.setMovable(False)
+        self.addToolBar(self.language_toolbar)
+        self.language_button = QToolButton()
+        self.language_button.setFixedWidth(100)
+        self.language_button.setText(get_text("language_menu"))
+        self.language_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        self.language_menu = QMenu(self.language_button)
+        self.language_button.setMenu(self.language_menu)
+        self.language_action_group = QActionGroup(self)
+        self.language_action_group.setExclusive(True)
+        self.language_actions: dict[str, QAction] = {}
+        for language_code, label_key in (("en", "english"), ("es", "spanish")):
+            action = QAction(get_text(label_key), self)
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda checked=False, code=language_code: self._select_language(code)
+            )
+            self.language_action_group.addAction(action)
+            self.language_menu.addAction(action)
+            self.language_actions[language_code] = action
+        self.language_actions[get_language()].setChecked(True)
+        self.language_toolbar.addWidget(self.language_button)
 
         self.file_path = QLineEdit()
-        self.file_path.setPlaceholderText("Selecciona un archivo…")
+        self.file_path.setPlaceholderText(get_text("file_placeholder"))
         self.file_path.setReadOnly(True)
 
-        browse_button = QPushButton("Seleccionar archivo…")
-        browse_button.clicked.connect(self._select_file)
+        self.browse_button = QPushButton(get_text("browse_file"))
+        self.browse_button.clicked.connect(self._select_file)
 
         file_layout = QHBoxLayout()
         file_layout.addWidget(self.file_path)
-        file_layout.addWidget(browse_button)
+        file_layout.addWidget(self.browse_button)
 
-        seed_button = QPushButton("Agregar semilla")
-        seed_button.clicked.connect(self._add_seed)
-        self.seed_label = QLabel("Semilla: automática")
+        self.seed_button = QPushButton(get_text("seed_button"))
+        self.seed_button.clicked.connect(self._add_seed)
+        self.seed_label = QLabel(get_text("seed_automatic"))
         seed_layout = QHBoxLayout()
-        seed_layout.addWidget(seed_button)
+        seed_layout.addWidget(self.seed_button)
         seed_layout.addWidget(self.seed_label)
         seed_layout.addStretch()
 
-        self.randomize_objects_checkbox = QCheckBox("Aleatorizar Objetos")
+        self.randomize_objects_checkbox = QCheckBox(get_text("randomize_objects"))
         self.randomize_objects_checkbox.setChecked(False)
 
-        self.object_randomization_group = QGroupBox("Tipos de objetos")
+        self.object_randomization_group = QGroupBox(get_text("object_types"))
         object_randomization_layout = QVBoxLayout(self.object_randomization_group)
-        self.randomize_chests_checkbox = QCheckBox("Cofres")
-        self.randomize_item_drops_checkbox = QCheckBox("Botines de objetos")
+        self.randomize_chests_checkbox = QCheckBox(get_text("chests"))
+        self.randomize_item_drops_checkbox = QCheckBox(get_text("item_drops"))
         self.randomize_equipment_drops_checkbox = QCheckBox(
-            "Botines de equipamento"
+            get_text("equipment_drops")
         )
         object_randomization_layout.addWidget(self.randomize_chests_checkbox)
         object_randomization_layout.addWidget(self.randomize_item_drops_checkbox)
@@ -215,14 +245,14 @@ class MainWindow(QMainWindow):
             self.object_randomization_group.setVisible
         )
 
-        self.randomize_shops_checkbox = QCheckBox("Tiendas de objetos")
-        self.shop_randomization_group = QGroupBox("Tipos de tienda")
+        self.randomize_shops_checkbox = QCheckBox(get_text("randomize_shops"))
+        self.shop_randomization_group = QGroupBox(get_text("shop_types"))
         shop_randomization_layout = QVBoxLayout(self.shop_randomization_group)
         self.randomize_normal_shops_checkbox = QCheckBox(
-            "Tiendas de objetos normales"
+            get_text("normal_shops")
         )
         self.randomize_equipment_shops_checkbox = QCheckBox(
-            "Tiendas de equipamento"
+            get_text("equipment_shops")
         )
         shop_randomization_layout.addWidget(self.randomize_normal_shops_checkbox)
         shop_randomization_layout.addWidget(self.randomize_equipment_shops_checkbox)
@@ -231,14 +261,18 @@ class MainWindow(QMainWindow):
             self.shop_randomization_group.setVisible
         )
 
-        self.scene_change_checkbox = QCheckBox("Cambio entre escenas")
-        self.scene_change_group = QGroupBox("Modo de cambio")
+        self.scene_change_checkbox = QCheckBox(get_text("scene_changes"))
+        self.scene_change_group = QGroupBox(get_text("scene_change_mode"))
         scene_change_layout = QVBoxLayout(self.scene_change_group)
         self.scene_change_mode_group = QButtonGroup(self)
         self.scene_change_mode_group.setExclusive(True)
-        self.scene_change_local_radio = QRadioButton("local")
-        self.scene_change_global_return_radio = QRadioButton("global con retorno")
-        self.scene_change_global_extreme_radio = QRadioButton("global extremo")
+        self.scene_change_local_radio = QRadioButton(get_text("scene_local"))
+        self.scene_change_global_return_radio = QRadioButton(
+            get_text("scene_global_return")
+        )
+        self.scene_change_global_extreme_radio = QRadioButton(
+            get_text("scene_global_extreme")
+        )
         for radio_button in (
             self.scene_change_local_radio,
             self.scene_change_global_return_radio,
@@ -252,7 +286,7 @@ class MainWindow(QMainWindow):
             self.scene_change_group.setVisible
         )
 
-        self.generate_button = QPushButton("Generar")
+        self.generate_button = QPushButton(get_text("generate_button"))
         self.generate_button.clicked.connect(self.generate)
 
         layout = QVBoxLayout()
@@ -270,14 +304,60 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         central_widget.setLayout(layout)
         self.setCentralWidget(central_widget)
-        self.statusBar().showMessage("Listo")
+        self._status_key = "status_ready"
+        self.statusBar().showMessage(get_text(self._status_key))
+
+    def _select_language(self, language_code: str) -> None:
+        set_language(language_code)
+        self._retranslate_ui()
+
+    def _retranslate_ui(self) -> None:
+        """Refresh visible interface text after a language change."""
+        self.setWindowTitle(get_text("window_title"))
+        self.language_button.setText(get_text("language_menu"))
+        self.language_actions["en"].setText(get_text("english"))
+        self.language_actions["es"].setText(get_text("spanish"))
+        self.language_actions[get_language()].setChecked(True)
+
+        self.file_path.setPlaceholderText(get_text("file_placeholder"))
+        self.browse_button.setText(get_text("browse_file"))
+        self.seed_button.setText(get_text("seed_button"))
+        self.seed_label.setText(
+            get_text("seed_automatic")
+            if self.seed is None
+            else get_text("seed_used").format(seed=self.seed)
+        )
+        self.randomize_objects_checkbox.setText(get_text("randomize_objects"))
+        self.object_randomization_group.setTitle(get_text("object_types"))
+        self.randomize_chests_checkbox.setText(get_text("chests"))
+        self.randomize_item_drops_checkbox.setText(get_text("item_drops"))
+        self.randomize_equipment_drops_checkbox.setText(get_text("equipment_drops"))
+        self.randomize_shops_checkbox.setText(get_text("randomize_shops"))
+        self.shop_randomization_group.setTitle(get_text("shop_types"))
+        self.randomize_normal_shops_checkbox.setText(get_text("normal_shops"))
+        self.randomize_equipment_shops_checkbox.setText(get_text("equipment_shops"))
+        self.scene_change_checkbox.setText(get_text("scene_changes"))
+        self.scene_change_group.setTitle(get_text("scene_change_mode"))
+        self.scene_change_local_radio.setText(get_text("scene_local"))
+        self.scene_change_global_return_radio.setText(
+            get_text("scene_global_return")
+        )
+        self.scene_change_global_extreme_radio.setText(
+            get_text("scene_global_extreme")
+        )
+        self.generate_button.setText(get_text("generate_button"))
+        self.statusBar().showMessage(get_text(self._status_key))
+
+    def _show_status(self, field_name: str, timeout: int = 0) -> None:
+        self._status_key = field_name
+        self.statusBar().showMessage(get_text(field_name), timeout)
 
     def _select_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Seleccionar archivo",
+            get_text("file_dialog_title"),
             "",
-            "Imágenes de PlayStation 1 (*.cue *.bin *.iso *.img *.ccd *.chd *.mdf *.mds *.pbp *.toc *.cbn)",
+            get_text("disc_image_filter"),
         )
         if file_path:
             self.file_path.setText(file_path)
@@ -285,14 +365,16 @@ class MainWindow(QMainWindow):
     def _add_seed(self) -> None:
         value, accepted = QInputDialog.getInt(
             self,
-            "Agregar semilla",
-            "Introduce un valor numérico:",
+            get_text("seed_dialog_title"),
+            get_text("seed_dialog_prompt"),
             self.seed if self.seed is not None else 0,
         )
         if accepted:
             self.seed = value
             random.seed(self.seed)
-            self.seed_label.setText(f"Semilla usada: {self.seed}")
+            self.seed_label.setText(
+                get_text("seed_used").format(seed=self.seed)
+            )
 
     def generate(self) -> None:
         # 1. Check that a disc image has been selected.
@@ -300,8 +382,8 @@ class MainWindow(QMainWindow):
         if not selected_file.is_file() or selected_file.suffix.lower() not in PS1_IMAGE_EXTENSIONS:
             QMessageBox.warning(
                 self,
-                "Archivo requerido",
-                "Selecciona una imagen de disco de PlayStation 1 válida antes de generar.",
+                get_text("required_file_title"),
+                get_text("required_file_message"),
             )
             return
 
@@ -309,8 +391,8 @@ class MainWindow(QMainWindow):
         if not mkpsxiso_is_installed(application_root()):
             download_confirmation = QMessageBox.question(
                 self,
-                "Descargar mkpsxiso",
-                "mkpsxiso no está instalado. ¿Deseas descargarlo e instalarlo ahora?",
+                get_text("download_title"),
+                get_text("download_message"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -321,13 +403,15 @@ class MainWindow(QMainWindow):
         if self.seed is None:
             self.seed = random.randint(0, 2**32 - 1)
             random.seed(self.seed)
-            self.seed_label.setText(f"Semilla usada: {self.seed}")
+            self.seed_label.setText(
+                get_text("seed_used").format(seed=self.seed)
+            )
 
         # 4. Confirm before starting extraction.
         confirmation = QMessageBox.question(
             self,
-            "Confirmar generación",
-            f"¿Deseas continuar con la generación usando la semilla {self.seed}?",
+            get_text("confirm_generation_title"),
+            get_text("confirm_generation_message").format(seed=self.seed),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -344,7 +428,7 @@ class MainWindow(QMainWindow):
             elif self.scene_change_global_extreme_radio.isChecked():
                 self._scene_transition_mode_requested = "global_extreme"
         self.generate_button.setEnabled(False)
-        self.statusBar().showMessage("Extrayendo los archivos de la imagen…")
+        self._show_status("status_extracting")
         self._extraction_worker = _ExtractionWorker(
             selected_file,
             self.seed,
@@ -384,15 +468,15 @@ class MainWindow(QMainWindow):
         # 6. Ask for the output directory immediately before building the image.
         output_directory = QFileDialog.getExistingDirectory(
             self,
-            "Seleccionar carpeta para guardar la imagen",
+            get_text("output_directory_title"),
             str(application_root()),
         )
         if not output_directory:
             self.generate_button.setEnabled(True)
-            self.statusBar().showMessage("Construcción cancelada", 10000)
+            self._show_status("status_build_cancelled", 10000)
             return
 
-        self.statusBar().showMessage("Construyendo la nueva imagen de disco…")
+        self._show_status("status_building")
         self._build_worker = _BuildWorker(
             Path(extracted_directory),
             Path(output_directory),
@@ -405,50 +489,52 @@ class MainWindow(QMainWindow):
     def _generation_succeeded(self, output_image: str) -> None:
         # 7. Report completion and show where the image was saved.
         self.generate_button.setEnabled(True)
-        self.statusBar().showMessage("Imagen de disco construida", 10000)
+        self._show_status("status_image_built", 10000)
         object_summary = ""
         if getattr(self, "_chests_changed", 0):
-            object_summary += f"\nCofres cambiados: {self._chests_changed}."
+            object_summary += "\n" + get_text("chests_changed").format(
+                count=self._chests_changed
+            )
         if getattr(self, "_item_drops_changed", 0):
-            object_summary += (
-                f"\nBotines de objetos cambiados: {self._item_drops_changed}."
+            object_summary += "\n" + get_text("item_drops_changed").format(
+                count=self._item_drops_changed
             )
         if getattr(self, "_equipment_drops_changed", 0):
-            object_summary += (
-                "\nMateriales de botines de equipamento cambiados: "
-                f"{self._equipment_drops_changed}."
+            object_summary += "\n" + get_text("equipment_drops_changed").format(
+                count=self._equipment_drops_changed
             )
         if getattr(self, "_normal_shop_slots_changed", 0):
-            object_summary += (
-                "\nSlots de tiendas de objetos normales procesados: "
-                f"{self._normal_shop_slots_changed}."
+            object_summary += "\n" + get_text("normal_shop_slots_changed").format(
+                count=self._normal_shop_slots_changed
             )
         if getattr(self, "_equipment_shop_items_changed", 0):
-            object_summary += (
-                "\nMateriales y valores derivados de equipamento en tiendas: "
-                f"{self._equipment_shop_items_changed}."
+            object_summary += "\n" + get_text(
+                "equipment_shop_items_changed"
+            ).format(
+                count=self._equipment_shop_items_changed
             )
         if getattr(self, "_scene_transition_mode_requested", None):
             mode_label = {
-                "local": "local",
-                "global_return": "global con retorno",
-                "global_extreme": "global extremo",
+                "local": get_text("scene_local"),
+                "global_return": get_text("scene_global_return"),
+                "global_extreme": get_text("scene_global_extreme"),
             }.get(self._scene_transition_mode_requested, self._scene_transition_mode_requested)
-            object_summary += (
-                f"\nTransiciones reasignadas ({mode_label}): "
-                f"{self._scene_transitions_changed}."
+            object_summary += "\n" + get_text("scene_transitions_changed").format(
+                mode=mode_label,
+                count=self._scene_transitions_changed,
             )
             if not self._scene_transitions_changed:
-                object_summary += (
-                    " No se encontraron transiciones compatibles para permutar."
-                )
+                object_summary += get_text("scene_no_compatible_transitions")
         QMessageBox.information(
             self,
-            "Generación completada",
-            f"La imagen de disco se creó en:\n{output_image}{object_summary}",
+            get_text("generation_completed_title"),
+            get_text("generation_completed_message").format(
+                output=output_image,
+                summary=object_summary,
+            ),
         )
 
     def _generation_failed(self, message: str) -> None:
         self.generate_button.setEnabled(True)
-        self.statusBar().showMessage("No se pudo completar la generación.", 10000)
-        QMessageBox.critical(self, "Error al generar", message)
+        self._show_status("generation_failed_status", 10000)
+        QMessageBox.critical(self, get_text("generation_failed_title"), message)
