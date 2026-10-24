@@ -7,6 +7,7 @@ from pathlib import Path
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QButtonGroup,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +27,8 @@ from src.core import (
     aleatorizar_materiales_botines_equipamento,
     aleatorizar_cofres,
     aleatorizar_cofres_y_botines_objetos,
+    aleatorizar_cambios_escena_local,
+    aleatorizar_cambios_escena_global_con_retorno,
     aleatorizar_materiales_tiendas_equipamento,
     aleatorizar_tiendas_objetos_normales,
     construir_imagen,
@@ -45,7 +49,7 @@ def application_root() -> Path:
 
 
 class _ExtractionWorker(QThread):
-    succeeded = pyqtSignal(str, int, int, int, int, int)
+    succeeded = pyqtSignal(str, int, int, int, int, int, int)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -57,6 +61,7 @@ class _ExtractionWorker(QThread):
         aleatorizar_botines_equipamento_activo: bool,
         aleatorizar_tiendas_objetos_normales_activo: bool,
         aleatorizar_tiendas_equipamento_activo: bool,
+        scene_transition_mode: str | None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -73,6 +78,7 @@ class _ExtractionWorker(QThread):
         self.aleatorizar_tiendas_equipamento_activo = (
             aleatorizar_tiendas_equipamento_activo
         )
+        self.scene_transition_mode = scene_transition_mode
 
     def run(self) -> None:
         try:
@@ -84,6 +90,7 @@ class _ExtractionWorker(QThread):
             equipment_drops_changed = 0
             normal_shop_slots_changed = 0
             equipment_shop_items_changed = 0
+            scene_transitions_changed = 0
             if self.aleatorizar_cofres_activo and self.aleatorizar_botines_objetos_activo:
                 chests_changed, item_drops_changed = aleatorizar_cofres_y_botines_objetos(
                     extracted_directory, self.semilla
@@ -108,10 +115,20 @@ class _ExtractionWorker(QThread):
                 equipment_shop_items_changed = aleatorizar_materiales_tiendas_equipamento(
                     extracted_directory, self.semilla
                 )
+            if self.scene_transition_mode == "local":
+                scene_transitions_changed = aleatorizar_cambios_escena_local(
+                    extracted_directory, self.semilla
+                )
+            elif self.scene_transition_mode == "global_return":
+                scene_transitions_changed = (
+                    aleatorizar_cambios_escena_global_con_retorno(
+                        extracted_directory, self.semilla
+                    )
+                )
             self.succeeded.emit(
                 str(extracted_directory), chests_changed, item_drops_changed,
                 equipment_drops_changed, normal_shop_slots_changed,
-                equipment_shop_items_changed,
+                equipment_shop_items_changed, scene_transitions_changed,
             )
         except Exception as error:
             self.failed.emit(str(error))
@@ -207,6 +224,27 @@ class MainWindow(QMainWindow):
             self.shop_randomization_group.setVisible
         )
 
+        self.scene_change_checkbox = QCheckBox("Cambio entre escenas")
+        self.scene_change_group = QGroupBox("Modo de cambio")
+        scene_change_layout = QVBoxLayout(self.scene_change_group)
+        self.scene_change_mode_group = QButtonGroup(self)
+        self.scene_change_mode_group.setExclusive(True)
+        self.scene_change_local_radio = QRadioButton("local")
+        self.scene_change_global_return_radio = QRadioButton("global con retorno")
+        self.scene_change_global_extreme_radio = QRadioButton("global extremo")
+        for radio_button in (
+            self.scene_change_local_radio,
+            self.scene_change_global_return_radio,
+            self.scene_change_global_extreme_radio,
+        ):
+            self.scene_change_mode_group.addButton(radio_button)
+            scene_change_layout.addWidget(radio_button)
+        self.scene_change_local_radio.setChecked(True)
+        self.scene_change_group.setVisible(False)
+        self.scene_change_checkbox.toggled.connect(
+            self.scene_change_group.setVisible
+        )
+
         self.generate_button = QPushButton("Generar")
         self.generate_button.clicked.connect(self.generar)
 
@@ -217,6 +255,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.object_randomization_group)
         layout.addWidget(self.randomize_shops_checkbox)
         layout.addWidget(self.shop_randomization_group)
+        layout.addWidget(self.scene_change_checkbox)
+        layout.addWidget(self.scene_change_group)
         layout.addWidget(self.generate_button)
         layout.addStretch()
 
@@ -288,6 +328,12 @@ class MainWindow(QMainWindow):
             return
 
         # 5. Extraer siempre en la carpeta legend_of_mana del proyecto.
+        self._scene_transition_mode_requested = None
+        if self.scene_change_checkbox.isChecked():
+            if self.scene_change_local_radio.isChecked():
+                self._scene_transition_mode_requested = "local"
+            elif self.scene_change_global_return_radio.isChecked():
+                self._scene_transition_mode_requested = "global_return"
         self.generate_button.setEnabled(False)
         self.statusBar().showMessage("Extrayendo los archivos de la imagen…")
         self._extraction_worker = _ExtractionWorker(
@@ -303,6 +349,7 @@ class MainWindow(QMainWindow):
             and self.randomize_normal_shops_checkbox.isChecked(),
             self.randomize_shops_checkbox.isChecked()
             and self.randomize_equipment_shops_checkbox.isChecked(),
+            self._scene_transition_mode_requested,
             self,
         )
         self._extraction_worker.succeeded.connect(self._extraction_succeeded)
@@ -317,12 +364,14 @@ class MainWindow(QMainWindow):
         equipment_drops_changed: int,
         normal_shop_slots_changed: int,
         equipment_shop_items_changed: int,
+        scene_transitions_changed: int,
     ) -> None:
         self._chests_changed = chests_changed
         self._item_drops_changed = item_drops_changed
         self._equipment_drops_changed = equipment_drops_changed
         self._normal_shop_slots_changed = normal_shop_slots_changed
         self._equipment_shop_items_changed = equipment_shop_items_changed
+        self._scene_transitions_changed = scene_transitions_changed
         # 6. Aquí se añadirán los procesos intermedios pendientes.
         # 7. Pedir la carpeta de salida justo antes de construir la imagen.
         output_directory = QFileDialog.getExistingDirectory(
@@ -371,6 +420,20 @@ class MainWindow(QMainWindow):
                 "\nMateriales y valores derivados de equipamento en tiendas: "
                 f"{self._equipment_shop_items_changed}."
             )
+        if getattr(self, "_scene_transition_mode_requested", None):
+            mode_label = {
+                "local": "local",
+                "global_return": "global con retorno",
+            }.get(self._scene_transition_mode_requested, self._scene_transition_mode_requested)
+            object_summary += (
+                f"\nCambios de destino entre escenas ({mode_label}): "
+                f"{self._scene_transitions_changed}."
+            )
+            if not self._scene_transitions_changed:
+                object_summary += (
+                    " No se encontró una reasignación segura que mantuviera "
+                    "conectados los grupos de habitaciones."
+                )
         QMessageBox.information(
             self,
             "Generación completada",

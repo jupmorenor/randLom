@@ -6,4 +6,4 @@ dist/
 build/
 *mkpsxiso-*
 legend_of_mana*
-lom-decomp
+lom-decomp/*

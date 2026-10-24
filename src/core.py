@@ -6,6 +6,7 @@ import random
 import struct
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -112,6 +113,674 @@ def construir_imagen(
         salida,
     )
     return imagen_salida
+
+
+# Scene transition decoding follows lom-decomp/tools/data/scenes/event_opcodes.py
+# and event_scripts.py. Only decoded, reachable 0x85 instructions are edited.
+_EVENT_FIXED_FORMATS = {
+    0x00: "", 0x01: "h", 0x02: "h", 0x03: "B", 0x04: "h", 0x05: "h",
+    0x06: "", 0x07: "", 0x0F: "B", 0x10: "H", 0x11: "BHBBB", 0x12: "BB",
+    0x13: "BH", 0x14: "B", 0x15: "B", 0x16: "B", 0x18: "H", 0x19: "BB",
+    0x1A: "BB", 0x1E: "B", 0x1F: "", 0x27: "B", 0x29: "", 0x2E: "",
+    0x38: "",
+}
+_EVENT_PAIR_FIELDS = {
+    **{opcode: 2 for opcode in range(0x40, 0x60)},
+    **{opcode: 4 for opcode in range(0x80, 0x90)},
+}
+_EVENT_TYPED_OPERANDS = {
+    0x0A: (0,), 0x28: (6, 4, 2), 0x2A: (6, 4, 2, 0), 0x2B: (6, 4, 2),
+    0x2C: (0,), 0x2D: (6, 4), 0x2F: (6, 4), 0x31: (6, 4, 2, 0),
+    0x32: (6, 4, 2, 0), 0x33: (6, 4, 2), 0x34: (0, 2, 4),
+    0x35: (0, 2, 4), 0x37: (6, 4),
+}
+
+
+def _event_operand_end(
+    data: bytes, position: int, kind: int, *, nibble: bool = False
+) -> tuple[int, int | None, int]:
+    """Read one lom-decomp basic (2-bit) or nibble (4-bit) event operand."""
+    kind &= 0xF
+    if nibble:
+        if kind == 0:
+            return position + 1, data[position] if position < len(data) else None, 1
+        if kind in (1, 4):
+            end = position + 2
+            return end, struct.unpack_from("<H", data, position)[0] if end <= len(data) else None, 2
+        if kind == 2:
+            end = position + 4
+            return end, struct.unpack_from("<i", data, position)[0] if end <= len(data) else None, 4
+        if kind == 3:
+            return position + 2, None, 2
+        if kind == 5:
+            end = position + 2
+            value = struct.unpack_from("<H", data, position)[0] if end <= len(data) else None
+            return end, value + 0x10000 if value is not None else None, -2
+        if kind in (6, 7):
+            return position, None, 0
+        if kind in (8, 9, 10):
+            return position, {8: 0, 9: 1, 10: 255}[kind], 0
+        raise ValueError(f"Tipo nibble desconocido: {kind}")
+
+    kind &= 0x3
+    if kind == 0:
+        return position + 2, None, 2
+    if kind == 1:
+        return position + 1, data[position] if position < len(data) else None, 1
+    if kind == 2:
+        end = position + 2
+        return end, struct.unpack_from("<H", data, position)[0] if end <= len(data) else None, 2
+    if kind == 3:
+        end = position + 4
+        return end, struct.unpack_from("<i", data, position)[0] if end <= len(data) else None, 4
+    raise ValueError(f"Tipo de operando de evento desconocido: {kind}")
+
+
+def _decode_event_instruction(
+    section: bytes, position: int
+) -> tuple[int, list[tuple[int, int, int]], list[int]]:
+    """Decode instruction length, scene-id operand offsets and static successors."""
+    if position >= len(section):
+        raise ValueError("instrucción fuera de la sección de eventos")
+    start = position
+    opcode = section[position]
+    position += 1
+    scene_operands: list[tuple[int, int, int]] = []
+    successors: list[int] = []
+
+    def read(fmt: str) -> int:
+        nonlocal position
+        size = struct.calcsize("<" + fmt)
+        if position + size > len(section):
+            raise ValueError("instrucción truncada en la sección de eventos")
+        value = struct.unpack_from("<" + fmt, section, position)[0]
+        position += size
+        return value
+
+    if opcode in _EVENT_FIXED_FORMATS:
+        fmt = _EVENT_FIXED_FORMATS[opcode]
+        values = [read(code) for code in fmt]
+        if opcode in (0x01, 0x02, 0x04, 0x05) and values[0]:
+            # The signed delta is relative to the instruction cursor after its
+            # operand, as in lom-decomp's branch_target(base + position, ...).
+            successors.append(position + values[0])
+        if opcode not in (0x00, 0x01, 0x2E):
+            successors.append(position)
+    elif opcode in _EVENT_PAIR_FIELDS:
+        count = _EVENT_PAIR_FIELDS[opcode]
+        descriptors = [read("B") for _ in range(count // 2)]
+        kinds = [kind for descriptor in descriptors for kind in (descriptor & 0xF, descriptor >> 4)]
+        for field_index, kind in enumerate(kinds):
+            operand_offset = position
+            position, value, operand_width = _event_operand_end(
+                section, position, kind, nibble=True
+            )
+            if opcode == 0x85 and field_index == 0 and value is not None:
+                scene_operands.append((operand_offset, value, operand_width))
+        if opcode != 0x85:
+            successors.append(position)
+    elif opcode in _EVENT_TYPED_OPERANDS:
+        descriptor = read("B")
+        shifts = _EVENT_TYPED_OPERANDS[opcode]
+        for shift in shifts:
+            position, _, _ = _event_operand_end(section, position, (descriptor >> shift) & 3)
+        successors.append(position)
+    elif opcode in (0x08, 0x09, 0x0B, 0x0C, 0x0D, 0x1B, 0x1C, 0x1D):
+        descriptor = read("B")
+        if opcode == 0x08:
+            read("H")
+            position, _, _ = _event_operand_end(section, position, descriptor)
+            position, _, _ = _event_operand_end(section, position, descriptor >> 2)
+            successors.append(position)
+        elif opcode == 0x09:
+            position, _, _ = _event_operand_end(section, position, descriptor)
+            while True:
+                key = read("B")
+                delta = read("h")
+                if delta:
+                    successors.append(position - 3 + delta)
+                if key == 0xFF:
+                    break
+        elif opcode == 0x0B:
+            position, _, _ = _event_operand_end(section, position, descriptor)
+            read("H")
+            read("H")
+            position, _, _ = _event_operand_end(section, position, descriptor >> 2)
+            read("H")
+            successors.append(position)
+        elif opcode in (0x0C, 0x0D):
+            read("B")
+            position, _, _ = _event_operand_end(section, position, descriptor)
+            read("I")
+            if opcode == 0x0C:
+                read("H")
+            else:
+                position, _, _ = _event_operand_end(section, position, descriptor >> 2)
+            successors.append(position)
+        elif opcode == 0x1B:
+            read("H")
+            position, _, _ = _event_operand_end(section, position, descriptor)
+            successors.append(position)
+        elif opcode == 0x1C:
+            position, _, _ = _event_operand_end(section, position, descriptor)
+            position, _, _ = _event_operand_end(section, position, descriptor >> 2)
+            read("H")
+            successors.append(position)
+        else:
+            position, _, _ = _event_operand_end(section, position, descriptor)
+            read("H")
+            successors.append(position)
+    elif opcode == 0x0E:
+        read("H")
+    else:
+        raise ValueError(f"opcode de evento no reconocido 0x{opcode:02X}")
+
+    if opcode in (0x02, 0x04, 0x05):
+        successors.append(position)
+    return position - start, scene_operands, successors
+
+
+def _scene_paths_from_manifest(project_directory: Path) -> list[Path]:
+    """Use mkpsxiso's preserved directory order as the FIELD scene resource order."""
+    manifest = project_directory / "legend_of_mana.xml"
+    if not manifest.is_file():
+        raise FileNotFoundError(f"No se encontró el manifiesto del disco: {manifest}")
+    root = ET.parse(manifest).getroot()
+    tree = root.find(".//directory_tree")
+    if tree is None:
+        raise ValueError("El manifiesto no contiene directory_tree.")
+    scenes: list[Path] = []
+
+    def collect_group(element: ET.Element, parts: tuple[str, ...]) -> None:
+        for child in element:
+            if child.tag == "dir":
+                collect_group(child, parts + (child.get("name", ""),))
+            elif child.tag == "file" and child.get("name", "").lower().endswith(".img"):
+                scenes.append(project_directory.joinpath(*parts, child.get("name", "")))
+
+    def find_ana(element: ET.Element) -> bool:
+        for child in element:
+            if child.tag != "dir":
+                continue
+            if child.get("name", "").upper() == "ANA":
+                for group in child:
+                    if group.tag == "dir" and (
+                        group.get("name", "").upper().startswith("INFO_")
+                        or group.get("name", "").upper() == "MAPINFO"
+                    ):
+                        collect_group(group, ("ANA", group.get("name", "")))
+                return True
+            if find_ana(child):
+                return True
+        return False
+
+    find_ana(tree)
+    return scenes
+
+
+def _componentes_conexas(
+    nodos: list[int], adyacencia: dict[int, set[int]]
+) -> dict[int, int]:
+    """Return weak component IDs for a directed scene graph."""
+    inversa = {nodo: set() for nodo in nodos}
+    for origen, destinos in adyacencia.items():
+        for destino in destinos:
+            if destino in inversa:
+                inversa[destino].add(origen)
+
+    componentes: dict[int, int] = {}
+    componente_id = 0
+    for raiz in nodos:
+        if raiz in componentes:
+            continue
+        componentes[raiz] = componente_id
+        pendientes = [raiz]
+        while pendientes:
+            actual = pendientes.pop()
+            vecinos = adyacencia.get(actual, set()) | inversa.get(actual, set())
+            for vecino in vecinos:
+                if vecino not in componentes:
+                    componentes[vecino] = componente_id
+                    pendientes.append(vecino)
+        componente_id += 1
+    return componentes
+
+
+def aleatorizar_cambios_escena_local(
+    carpeta_proyecto: str | Path, semilla: int
+) -> int:
+    """Randomize room links within their source land without splitting room groups.
+
+    Scene IDs come from the ISO manifest's directory order. Destinations must
+    remain in the source scene's three-letter land prefix. World-map and
+    cross-land destinations are preserved. Destinations are permuted only
+    within their original weakly connected room group, and each accepted
+    permutation is checked to keep that group connected. Every room retains
+    its original number of outgoing transitions and every land exit remains.
+    """
+    project = Path(carpeta_proyecto).expanduser().resolve()
+    ana = project / "ANA"
+    manifest_scenes = _scene_paths_from_manifest(project)
+    scene_by_id = {
+        index: path for index, path in enumerate(manifest_scenes)
+        if path.is_file() and path.parent.parent.resolve() == ana.resolve()
+    }
+    if not scene_by_id:
+        raise RuntimeError("El manifiesto no enumera escenas FIELD de ANA.")
+
+    def is_scene_group(path: Path) -> bool:
+        group = path.parent.name.upper()
+        return group.startswith("INFO_") or group == "MAPINFO"
+
+    records: list[tuple[Path, int, int, int, str, int]] = []
+    nodes_by_location: dict[str, list[int]] = {}
+    for scene_id, path in scene_by_id.items():
+        if is_scene_group(path):
+            location = path.stem.split("_", 1)[0].upper()
+            if location:
+                nodes_by_location.setdefault(location, []).append(scene_id)
+
+    for source_id, scene_path in scene_by_id.items():
+        if not scene_path.is_file() or not is_scene_group(scene_path):
+            continue
+        data = scene_path.read_bytes()
+        if len(data) < 40:
+            continue
+        offsets = struct.unpack_from("<10I", data)
+        if offsets[0] != 40 or tuple(sorted(offsets)) != offsets or any(
+            offset > len(data) or offset % 4 for offset in offsets
+        ):
+            continue
+        section_start, section_end = offsets[1], offsets[2]
+        section = data[section_start:section_end]
+        if len(section) < 2:
+            continue
+        table_size = struct.unpack_from("<H", section)[0]
+        if table_size < 2 or table_size % 2 or table_size > len(section):
+            continue
+        script_offsets = struct.unpack_from(f"<{table_size // 2}H", section)
+        pending = [offset for offset in script_offsets if table_size <= offset < len(section)]
+        visited: set[int] = set()
+        while pending:
+            pos = pending.pop()
+            if pos in visited or pos < table_size or pos >= len(section):
+                continue
+            visited.add(pos)
+            try:
+                instruction_size, operands, successors = _decode_event_instruction(section, pos)
+            except (ValueError, struct.error):
+                continue
+            if instruction_size <= 0:
+                continue
+            for operand_offset, destination, operand_width in operands:
+                destination_id = destination & 0x7FFF
+                destination_path = scene_by_id.get(destination_id)
+                if destination_path is None or destination >= 0xFFFE:
+                    continue
+                # The origin prefix defines the land: using the old target's
+                # prefix here could redirect a doorway across land boundaries.
+                location = scene_path.stem.split("_", 1)[0].upper()
+                if not location:
+                    continue
+                absolute_operand = section_start + operand_offset
+                records.append((scene_path, absolute_operand, destination, source_id, location, operand_width))
+            pending.extend(target for target in successors if 0 <= target < len(section))
+
+    if not records:
+        raise RuntimeError("No se encontraron transiciones internas compatibles para aleatorizar.")
+
+    adjacency_by_location: dict[str, dict[int, set[int]]] = {}
+    for index, (_, _, old_destination, source_id, location, operand_width) in enumerate(records):
+        destination_id = old_destination & 0x7FFF
+        if operand_width not in (1, 2) or destination_id not in nodes_by_location.get(location, []):
+            continue
+        graph = adjacency_by_location.setdefault(location, {
+            node: set() for node in nodes_by_location[location]
+        })
+        graph[source_id].add(destination_id)
+
+    component_by_location: dict[str, dict[int, int]] = {}
+    for location, nodes in nodes_by_location.items():
+        graph = adjacency_by_location.get(location, {node: set() for node in nodes})
+        component_by_location[location] = _componentes_conexas(nodes, graph)
+
+    rng = random.Random(semilla)
+    changed_by_path: dict[Path, bytearray] = {}
+    changed = 0
+    edge_groups: dict[tuple[str, int, int], list[int]] = {}
+    edge_indexes_by_component: dict[tuple[str, int], list[int]] = {}
+    for index, (_, _, old_destination, source_id, location, operand_width) in enumerate(records):
+        destination_id = old_destination & 0x7FFF
+        components = component_by_location.get(location, {})
+        if operand_width not in (1, 2) or components.get(source_id) != components.get(destination_id):
+            continue
+        component_id = components[source_id]
+        edge_indexes_by_component.setdefault((location, component_id), []).append(index)
+        edge_groups.setdefault((location, component_id, operand_width), []).append(index)
+
+    targets = [record[2] & 0x7FFF for record in records]
+    for (location, component_id, operand_width), indexes in edge_groups.items():
+        if len(indexes) < 2:
+            continue
+        nodes = [
+            node for node, component in component_by_location[location].items()
+            if component == component_id
+        ]
+        original_destinations = [targets[index] for index in indexes]
+        accepted: list[int] | None = None
+        # Preserve destination counts while trying different endpoint
+        # assignments. A candidate is accepted only if it keeps every room in
+        # this original group connected to the others.
+        for _ in range(512):
+            candidate = original_destinations.copy()
+            rng.shuffle(candidate)
+            if candidate == original_destinations:
+                continue
+            candidate_by_index = dict(zip(indexes, candidate))
+            weak_graph = {node: set() for node in nodes}
+            for edge_index in edge_indexes_by_component[(location, component_id)]:
+                _, _, old_destination, source_id, _, _ = records[edge_index]
+                edge_dest = candidate_by_index.get(edge_index, targets[edge_index])
+                weak_graph[source_id].add(edge_dest)
+                weak_graph[edge_dest].add(source_id)
+            reached = {nodes[0]} if nodes else set()
+            pending_nodes = list(reached)
+            while pending_nodes:
+                current = pending_nodes.pop()
+                for neighbor in weak_graph[current] - reached:
+                    reached.add(neighbor)
+                    pending_nodes.append(neighbor)
+            if reached == set(nodes):
+                accepted = candidate
+                break
+        if accepted is None:
+            continue
+        for index, new_destination in zip(indexes, accepted):
+            if new_destination == targets[index]:
+                continue
+            targets[index] = new_destination
+            changed += 1
+
+    for index, (scene_path, operand_offset, old_destination, _, _, operand_width) in enumerate(records):
+        new_destination = targets[index]
+        if new_destination == (old_destination & 0x7FFF):
+            continue
+        mutable = changed_by_path.get(scene_path)
+        if mutable is None:
+            mutable = bytearray(scene_path.read_bytes())
+            changed_by_path[scene_path] = mutable
+        if operand_width == 1:
+            struct.pack_into("<B", mutable, operand_offset, new_destination & 0xFF)
+        else:
+            old_word = struct.unpack_from("<H", mutable, operand_offset)[0]
+            new_word = (old_word & 0x8000) | (new_destination & 0x7FFF)
+            struct.pack_into("<H", mutable, operand_offset, new_word)
+
+    for path, data in changed_by_path.items():
+        path.write_bytes(data)
+    return changed
+
+
+def aleatorizar_cambios_escena_global_con_retorno(
+    carpeta_proyecto: str | Path, semilla: int
+) -> int:
+    """Swap reciprocal doorway links between lands while keeping each return.
+
+    A reciprocal pair is accepted only when a scene has exactly one literal
+    transition to the other scene and that scene has exactly one literal
+    transition back. Two pairs are rewired together: each entry receives the
+    destination parameters of the counterpart doorway, including its object,
+    audio and spawn values. This makes the doorway reached on arrival point back
+    through the paired transition. Ambiguous or dynamic transitions are kept.
+    """
+    project = Path(carpeta_proyecto).expanduser().resolve()
+    ana = project / "ANA"
+    manifest_scenes = _scene_paths_from_manifest(project)
+    scene_by_id = {
+        index: path for index, path in enumerate(manifest_scenes)
+        if path.is_file() and path.parent.parent.resolve() == ana.resolve()
+        and (path.parent.name.upper().startswith("INFO_")
+             or path.parent.name.upper() == "MAPINFO")
+    }
+    if not scene_by_id:
+        raise RuntimeError("El manifiesto no enumera escenas FIELD de ANA.")
+    non_land_prefixes = {"BTL", "DMY", "END", "INIT", "MID"}
+
+    # Each record is one 0x85 instruction and its four operands: scene, object,
+    # audio and spawn. A complete, compatible literal payload moves together.
+    records: list[
+        tuple[int, Path, tuple[tuple[int, int | None, int, bytes], ...]]
+    ] = []
+    transitions_by_pair: dict[tuple[int, int], list[int]] = {}
+    connectivity_edges: list[tuple[int, int]] = []
+    prefix_by_scene = {
+        scene_id: path.stem.split("_", 1)[0].upper()
+        for scene_id, path in scene_by_id.items()
+    }
+    for source_id, scene_path in scene_by_id.items():
+        data = scene_path.read_bytes()
+        if len(data) < 40:
+            continue
+        offsets = struct.unpack_from("<10I", data)
+        if offsets[0] != 40 or tuple(sorted(offsets)) != offsets or any(
+            offset > len(data) or offset % 4 for offset in offsets
+        ):
+            continue
+        section_start, section_end = offsets[1], offsets[2]
+        section = data[section_start:section_end]
+        if len(section) < 2:
+            continue
+        table_size = struct.unpack_from("<H", section)[0]
+        if table_size < 2 or table_size % 2 or table_size > len(section):
+            continue
+        script_offsets = struct.unpack_from(f"<{table_size // 2}H", section)
+        pending = [offset for offset in script_offsets if table_size <= offset < len(section)]
+        visited: set[int] = set()
+        while pending:
+            pos = pending.pop()
+            if pos in visited or pos < table_size or pos >= len(section):
+                continue
+            visited.add(pos)
+            try:
+                instruction_size, scene_operands, successors = _decode_event_instruction(
+                    section, pos
+                )
+            except (ValueError, struct.error):
+                continue
+            if instruction_size <= 0:
+                continue
+            for _, destination, _ in scene_operands:
+                if destination is None or destination >= 0xFFFE:
+                    continue
+                target_id = destination & 0x7FFF
+                if (target_id in scene_by_id
+                        and prefix_by_scene[source_id] not in non_land_prefixes
+                        and prefix_by_scene[target_id] not in non_land_prefixes):
+                    connectivity_edges.append((source_id, target_id))
+            if section[pos] == 0x85:
+                descriptor_start = pos + 1
+                if descriptor_start + 2 > len(section):
+                    continue
+                descriptors = section[descriptor_start:descriptor_start + 2]
+                kinds = [kind for descriptor in descriptors
+                         for kind in (descriptor & 0xF, descriptor >> 4)]
+                operand_pos = descriptor_start + 2
+                fields: list[tuple[int, int | None, int, bytes]] = []
+                for kind in kinds:
+                    field_offset = operand_pos
+                    operand_pos, value, width = _event_operand_end(
+                        section, operand_pos, kind, nibble=True
+                    )
+                    raw_value = section[field_offset:operand_pos]
+                    fields.append((section_start + field_offset, value, width, raw_value))
+                if (len(fields) == 4 and all(field[1] is not None for field in fields)
+                        and all(field[2] in (0, 1, 2, 4) for field in fields)
+                        and fields[0][2] in (1, 2)
+                        and fields[3][2] in (0, 1, 2)):
+                    destination = fields[0][1]
+                    target_id = destination & 0x7FFF
+                    if (destination < 0xFFFE and target_id in scene_by_id
+                            and prefix_by_scene[source_id] not in non_land_prefixes
+                            and prefix_by_scene[target_id] not in non_land_prefixes):
+                        record_index = len(records)
+                        records.append((source_id, scene_path, tuple(fields)))
+                        transitions_by_pair.setdefault((source_id, target_id), []).append(
+                            record_index
+                        )
+            pending.extend(target for target in successors if 0 <= target < len(section))
+
+    # Only unique reverse links can be identified as the exact paired doorway
+    # from these scene scripts. Multiple links between the same rooms are
+    # ambiguous, so they remain untouched.
+    reciprocal_pairs: list[tuple[int, int, int, int]] = []
+    for (source_id, target_id), forward_indexes in transitions_by_pair.items():
+        if source_id >= target_id or len(forward_indexes) != 1:
+            continue
+        reverse_indexes = transitions_by_pair.get((target_id, source_id), [])
+        if len(reverse_indexes) != 1:
+            continue
+        reciprocal_pairs.append(
+            (source_id, target_id, forward_indexes[0], reverse_indexes[0])
+        )
+    if len(reciprocal_pairs) < 2:
+        raise RuntimeError(
+            "No se encontraron suficientes pares de puertas recíprocas y no ambiguas."
+        )
+
+    def fields_compatible(first: int, second: int) -> bool:
+        first_fields = records[first][2]
+        second_fields = records[second][2]
+        return all(
+            first_field[2] == second_field[2]
+            and (first_field[2] != 0 or first_field[1] == second_field[1])
+            for first_field, second_field in zip(first_fields, second_fields)
+        )
+
+    scene_nodes = [
+        scene_id for scene_id, prefix in prefix_by_scene.items()
+        if prefix not in non_land_prefixes
+    ]
+    edge_counts: dict[tuple[int, int], int] = {}
+    for source_id, target_id in connectivity_edges:
+        edge = (min(source_id, target_id), max(source_id, target_id))
+        edge_counts[edge] = edge_counts.get(edge, 0) + 1
+
+    def component_map(counts: dict[tuple[int, int], int]) -> dict[int, int]:
+        adjacency = {scene_id: set() for scene_id in scene_nodes}
+        for (first, second), count in counts.items():
+            if count and first in adjacency and second in adjacency:
+                adjacency[first].add(second)
+                adjacency[second].add(first)
+        return _componentes_conexas(scene_nodes, adjacency)
+
+    def swap_keeps_groups_connected(
+        a: int, b: int, x: int, y: int, left: int, right: int
+    ) -> bool:
+        before = component_map(edge_counts)
+        affected_components = {before[a], before[x]}
+        affected_nodes = {
+            node for node, component in before.items()
+            if component in affected_components
+        }
+        candidate = edge_counts.copy()
+        for edge in ((min(a, b), max(a, b)), (min(x, y), max(x, y))):
+            candidate[edge] = candidate.get(edge, 0) - 2
+        for edge in ((min(a, left), max(a, left)), (min(b, right), max(b, right))):
+            candidate[edge] = candidate.get(edge, 0) + 2
+        adjacency = {scene_id: set() for scene_id in affected_nodes}
+        for (first, second), count in candidate.items():
+            if count > 0 and first in adjacency and second in adjacency:
+                adjacency[first].add(second)
+                adjacency[second].add(first)
+        root = next(iter(affected_nodes), None)
+        if root is None:
+            return False
+        reached = {root}
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            for neighbor in adjacency[current] - reached:
+                reached.add(neighbor)
+                pending.append(neighbor)
+        return reached == affected_nodes
+
+    rng = random.Random(semilla)
+    rng.shuffle(reciprocal_pairs)
+    consumed: set[int] = set()
+    new_payload_by_record: dict[int, int] = {}
+    for first_index, first_pair in enumerate(reciprocal_pairs):
+        if first_index in consumed:
+            continue
+        a, b, ab, ba = first_pair
+        selected: tuple[int, tuple[int, int, int, int]] | None = None
+        candidate_indexes = list(range(first_index + 1, len(reciprocal_pairs)))
+        rng.shuffle(candidate_indexes)
+        for second_index in candidate_indexes:
+            if second_index in consumed:
+                continue
+            x, y, xy, yx = reciprocal_pairs[second_index]
+            if {a, b} & {x, y}:
+                continue
+            orientations = [(x, y, xy, yx, False), (y, x, yx, xy, True)]
+            rng.shuffle(orientations)
+            for left, right, left_to_right, right_to_left, _ in orientations:
+                # Both resulting connections must cross land-prefix groups.
+                if (prefix_by_scene[a] == prefix_by_scene[left]
+                        or prefix_by_scene[b] == prefix_by_scene[right]):
+                    continue
+                # Exchange complete entry payloads so each arrival uses the
+                # spawn that leads back through the paired doorway.
+                assignments = (
+                    (ab, right_to_left), (right_to_left, ab),
+                    (ba, left_to_right), (left_to_right, ba),
+                )
+                if not all(fields_compatible(source, payload)
+                           for source, payload in assignments):
+                    continue
+                if not swap_keeps_groups_connected(a, b, x, y, left, right):
+                    continue
+                selected = (second_index, assignments)
+                break
+            if selected is not None:
+                break
+        if selected is None:
+            continue
+        second_index, assignments = selected
+        x, y, _, _ = reciprocal_pairs[second_index]
+        left = int(records[assignments[0][1]][2][0][1]) & 0x7FFF
+        right = int(records[assignments[2][1]][2][0][1]) & 0x7FFF
+        for edge in ((min(a, b), max(a, b)), (min(x, y), max(x, y))):
+            edge_counts[edge] = edge_counts.get(edge, 0) - 2
+        for edge in ((min(a, left), max(a, left)), (min(b, right), max(b, right))):
+            edge_counts[edge] = edge_counts.get(edge, 0) + 2
+        consumed.update((first_index, second_index))
+        new_payload_by_record.update(assignments)
+
+    if not new_payload_by_record:
+        raise RuntimeError(
+            "No se encontraron pares de puertas compatibles para enlazar entre tierras."
+        )
+
+    changed_by_path: dict[Path, bytearray] = {}
+    changed_destinations = 0
+    for record_index, payload_index in new_payload_by_record.items():
+        _, path, current_fields = records[record_index]
+        _, _, payload_fields = records[payload_index]
+        if current_fields[0][1] != payload_fields[0][1]:
+            changed_destinations += 1
+        mutable = changed_by_path.get(path)
+        if mutable is None:
+            mutable = bytearray(path.read_bytes())
+            changed_by_path[path] = mutable
+        for (offset, _, width, _), (_, _, _, raw_value) in zip(
+            current_fields, payload_fields
+        ):
+            if width:
+                mutable[offset:offset + width] = raw_value
+
+    for path, data in changed_by_path.items():
+        path.write_bytes(data)
+    return changed_destinations
 
 
 # Formato y firma tomados de lom-decomp/tools/data/scenes/layout.py.
