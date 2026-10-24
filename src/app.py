@@ -29,6 +29,7 @@ from src.core import (
     aleatorizar_cofres_y_botines_objetos,
     aleatorizar_cambios_escena_local,
     aleatorizar_cambios_escena_global_con_retorno,
+    aleatorizar_cambios_escena_global_extremo,
     aleatorizar_materiales_tiendas_equipamento,
     aleatorizar_tiendas_objetos_normales,
     construir_imagen,
@@ -122,6 +123,12 @@ class _ExtractionWorker(QThread):
             elif self.scene_transition_mode == "global_return":
                 scene_transitions_changed = (
                     aleatorizar_cambios_escena_global_con_retorno(
+                        extracted_directory, self.semilla
+                    )
+                )
+            elif self.scene_transition_mode == "global_extreme":
+                scene_transitions_changed = (
+                    aleatorizar_cambios_escena_global_extremo(
                         extracted_directory, self.semilla
                     )
                 )
@@ -334,6 +341,8 @@ class MainWindow(QMainWindow):
                 self._scene_transition_mode_requested = "local"
             elif self.scene_change_global_return_radio.isChecked():
                 self._scene_transition_mode_requested = "global_return"
+            elif self.scene_change_global_extreme_radio.isChecked():
+                self._scene_transition_mode_requested = "global_extreme"
         self.generate_button.setEnabled(False)
         self.statusBar().showMessage("Extrayendo los archivos de la imagen…")
         self._extraction_worker = _ExtractionWorker(
@@ -424,15 +433,15 @@ class MainWindow(QMainWindow):
             mode_label = {
                 "local": "local",
                 "global_return": "global con retorno",
+                "global_extreme": "global extremo",
             }.get(self._scene_transition_mode_requested, self._scene_transition_mode_requested)
             object_summary += (
-                f"\nCambios de destino entre escenas ({mode_label}): "
+                f"\nTransiciones reasignadas ({mode_label}): "
                 f"{self._scene_transitions_changed}."
             )
             if not self._scene_transitions_changed:
                 object_summary += (
-                    " No se encontró una reasignación segura que mantuviera "
-                    "conectados los grupos de habitaciones."
+                    " No se encontraron transiciones compatibles para permutar."
                 )
         QMessageBox.information(
             self,

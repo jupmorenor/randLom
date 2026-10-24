@@ -783,6 +783,179 @@ def aleatorizar_cambios_escena_global_con_retorno(
     return changed_destinations
 
 
+def aleatorizar_cambios_escena_global_extremo(
+    carpeta_proyecto: str | Path, semilla: int
+) -> int:
+    """Permute complete compatible scene-transition payloads globally.
+
+    Scene entries and exits are treated as independent transitions: no reverse
+    link is created. Literal destinations may point to any indexed scene, the
+    world map (0xFFFF), or the title screen (0xFFFE). Scenes with BTL, DMY or
+    MID filename prefixes are excluded as both transition sources and ordinary
+    scene destinations. Dynamic operands and payloads whose operand formats do
+    not match another transition are left untouched.
+    """
+    project = Path(carpeta_proyecto).expanduser().resolve()
+    ana = project / "ANA"
+    manifest_scenes = _scene_paths_from_manifest(project)
+    scene_by_id = {
+        index: path for index, path in enumerate(manifest_scenes)
+        if path.is_file() and path.parent.parent.resolve() == ana.resolve()
+        and (path.parent.name.upper().startswith("INFO_")
+             or path.parent.name.upper() == "MAPINFO")
+    }
+    if not scene_by_id:
+        raise RuntimeError("El manifiesto no enumera escenas FIELD de ANA.")
+
+    excluded_prefixes = {"BTL", "DMY", "MID"}
+    prefix_by_scene = {
+        scene_id: path.stem.split("_", 1)[0].upper()
+        for scene_id, path in scene_by_id.items()
+    }
+    # (source scene, file, (offset, value, width, raw bytes)*, operand kinds)
+    records: list[
+        tuple[int, Path, tuple[tuple[int, int | None, int, bytes], ...], tuple[int, ...]]
+    ] = []
+    groups: dict[tuple[int, ...], list[int]] = {}
+
+    for source_id, scene_path in scene_by_id.items():
+        if prefix_by_scene[source_id] in excluded_prefixes:
+            continue
+        data = scene_path.read_bytes()
+        if len(data) < 40:
+            continue
+        offsets = struct.unpack_from("<10I", data)
+        if offsets[0] != 40 or tuple(sorted(offsets)) != offsets or any(
+            offset > len(data) or offset % 4 for offset in offsets
+        ):
+            continue
+        section_start, section_end = offsets[1], offsets[2]
+        section = data[section_start:section_end]
+        if len(section) < 2:
+            continue
+        table_size = struct.unpack_from("<H", section)[0]
+        if table_size < 2 or table_size % 2 or table_size > len(section):
+            continue
+        script_offsets = struct.unpack_from(f"<{table_size // 2}H", section)
+        pending = [offset for offset in script_offsets if table_size <= offset < len(section)]
+        visited: set[int] = set()
+
+        while pending:
+            pos = pending.pop()
+            if pos in visited or pos < table_size or pos >= len(section):
+                continue
+            visited.add(pos)
+            try:
+                instruction_size, _, successors = _decode_event_instruction(section, pos)
+            except (ValueError, struct.error):
+                continue
+            if instruction_size <= 0:
+                continue
+
+            if section[pos] == 0x85:
+                descriptor_start = pos + 1
+                if descriptor_start + 2 > len(section):
+                    continue
+                descriptors = section[descriptor_start:descriptor_start + 2]
+                kinds = tuple(
+                    kind for descriptor in descriptors
+                    for kind in (descriptor & 0xF, descriptor >> 4)
+                )
+                operand_pos = descriptor_start + 2
+                fields: list[tuple[int, int | None, int, bytes]] = []
+                for kind in kinds:
+                    field_offset = operand_pos
+                    try:
+                        operand_pos, value, width = _event_operand_end(
+                            section, operand_pos, kind, nibble=True
+                        )
+                    except (ValueError, struct.error):
+                        fields = []
+                        break
+                    if operand_pos > len(section):
+                        fields = []
+                        break
+                    fields.append((
+                        section_start + field_offset,
+                        value,
+                        width,
+                        section[field_offset:operand_pos],
+                    ))
+
+                if len(fields) == 4:
+                    destination = fields[0][1]
+                    target_eligible = False
+                    if destination in (0xFFFE, 0xFFFF):
+                        target_eligible = True
+                    elif destination is not None and 0 <= destination < 0xFFFE:
+                        target_id = destination & 0x7FFF
+                        target_eligible = (
+                            target_id in scene_by_id
+                            and prefix_by_scene[target_id] not in excluded_prefixes
+                        )
+                    compatible_literals = (
+                        all(field[1] is not None for field in fields)
+                        and all(field[2] in (0, 1, 2, 4) for field in fields)
+                        and fields[0][2] in (1, 2)
+                    )
+                    if target_eligible and compatible_literals:
+                        record_index = len(records)
+                        records.append((source_id, scene_path, tuple(fields), kinds))
+                        groups.setdefault(kinds, []).append(record_index)
+
+            pending.extend(target for target in successors if 0 <= target < len(section))
+
+    if not records:
+        raise RuntimeError("No se encontraron transiciones globales compatibles.")
+
+    rng = random.Random(semilla)
+    payload_for_record: dict[int, int] = {}
+    for indexes in groups.values():
+        if len(indexes) < 2:
+            continue
+        shuffled_payloads = indexes.copy()
+        rng.shuffle(shuffled_payloads)
+        # Avoid leaving a whole group untouched when a derangement is possible.
+        for _ in range(10):
+            if any(
+                records[index][2][0][3] != records[payload][2][0][3]
+                for index, payload in zip(indexes, shuffled_payloads)
+            ):
+                break
+            rng.shuffle(shuffled_payloads)
+        payload_for_record.update(zip(indexes, shuffled_payloads))
+
+    changed_by_path: dict[Path, bytearray] = {}
+    changed = 0
+    for record_index, payload_index in payload_for_record.items():
+        _, path, current_fields, _ = records[record_index]
+        _, _, payload_fields, _ = records[payload_index]
+        if all(
+            current_field[3] == payload_field[3]
+            for current_field, payload_field in zip(current_fields, payload_fields)
+        ):
+            continue
+        changed += 1
+        mutable = changed_by_path.get(path)
+        if mutable is None:
+            mutable = bytearray(path.read_bytes())
+            changed_by_path[path] = mutable
+        for (offset, _, width, _), (_, _, _, raw_value) in zip(
+            current_fields, payload_fields
+        ):
+            if width:
+                mutable[offset:offset + width] = raw_value
+
+    if not changed:
+        raise RuntimeError(
+            "La semilla no produjo cambios en las transiciones compatibles. "
+            "Prueba con otra semilla."
+        )
+    for path, data in changed_by_path.items():
+        path.write_bytes(data)
+    return changed
+
+
 # Formato y firma tomados de lom-decomp/tools/data/scenes/layout.py.
 # FieldLayoutRecord tiene 48 bytes; scripts[4] (item_id) comienza en el byte 24.
 _FIELD_LAYOUT_RECORD = struct.Struct("<IHBBIHH16H")
