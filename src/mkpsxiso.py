@@ -1,4 +1,4 @@
-"""Descarga e instalación local de mkpsxiso desde GitHub Releases."""
+"""Download and install mkpsxiso locally from GitHub Releases."""
 
 from __future__ import annotations
 
@@ -171,13 +171,13 @@ def _find_binary(application_root: Path, binary_name: str) -> Path | None:
 
 
 def mkpsxiso_is_installed(application_root: Path) -> bool:
-    """Indica si el ejecutable ya está disponible en la carpeta de la aplicación."""
+    """Check whether the executable is already available in the application directory."""
     binary_name = "mkpsxiso.exe" if _operating_system() == "windows" else "mkpsxiso"
     return _find_binary(application_root.resolve(), binary_name) is not None
 
 
 def ensure_mkpsxiso(application_root: Path) -> str | None:
-    """Instala mkpsxiso en la raíz de la aplicación si todavía no está presente."""
+    """Install mkpsxiso in the application root if it is not already present."""
     application_root = application_root.resolve()
     application_root.mkdir(parents=True, exist_ok=True)
     binary_name = "mkpsxiso.exe" if _operating_system() == "windows" else "mkpsxiso"

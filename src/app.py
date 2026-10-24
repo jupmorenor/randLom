@@ -1,4 +1,4 @@
-"""Interfaz gráfica de la aplicación."""
+"""Application GUI."""
 
 import random
 import sys
@@ -23,17 +23,17 @@ from PyQt6.QtWidgets import (
 )
 
 from src.core import (
-    aleatorizar_botines_objetos,
-    aleatorizar_materiales_botines_equipamento,
-    aleatorizar_cofres,
-    aleatorizar_cofres_y_botines_objetos,
-    aleatorizar_cambios_escena_local,
-    aleatorizar_cambios_escena_global_con_retorno,
-    aleatorizar_cambios_escena_global_extremo,
-    aleatorizar_materiales_tiendas_equipamento,
-    aleatorizar_tiendas_objetos_normales,
-    construir_imagen,
-    generar as extraer_imagen,
+    randomize_item_drops,
+    randomize_equipment_drop_materials,
+    randomize_chests,
+    randomize_chests_and_item_drops,
+    randomize_local_scene_transitions,
+    randomize_global_scene_transitions_with_return,
+    randomize_extreme_global_scene_transitions,
+    randomize_equipment_shop_materials,
+    randomize_normal_shop_items,
+    build_disc_image,
+    extract_disc_image,
 )
 from src.mkpsxiso import ensure_mkpsxiso, mkpsxiso_is_installed
 
@@ -43,7 +43,7 @@ PS1_IMAGE_EXTENSIONS = {
 
 
 def application_root() -> Path:
-    """Devuelve la carpeta de la aplicación, también en una distribución congelada."""
+    """Return the application directory, including in a frozen distribution."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
@@ -56,28 +56,28 @@ class _ExtractionWorker(QThread):
     def __init__(
         self,
         image_path: Path,
-        semilla: int,
-        aleatorizar_cofres_activo: bool,
-        aleatorizar_botines_objetos_activo: bool,
-        aleatorizar_botines_equipamento_activo: bool,
-        aleatorizar_tiendas_objetos_normales_activo: bool,
-        aleatorizar_tiendas_equipamento_activo: bool,
+        seed: int,
+        randomize_chests_enabled: bool,
+        randomize_item_drops_enabled: bool,
+        randomize_equipment_drops_enabled: bool,
+        randomize_normal_shop_items_enabled: bool,
+        randomize_equipment_shop_items_enabled: bool,
         scene_transition_mode: str | None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.image_path = image_path
-        self.semilla = semilla
-        self.aleatorizar_cofres_activo = aleatorizar_cofres_activo
-        self.aleatorizar_botines_objetos_activo = aleatorizar_botines_objetos_activo
-        self.aleatorizar_botines_equipamento_activo = (
-            aleatorizar_botines_equipamento_activo
+        self.seed = seed
+        self.randomize_chests_enabled = randomize_chests_enabled
+        self.randomize_item_drops_enabled = randomize_item_drops_enabled
+        self.randomize_equipment_drops_enabled = (
+            randomize_equipment_drops_enabled
         )
-        self.aleatorizar_tiendas_objetos_normales_activo = (
-            aleatorizar_tiendas_objetos_normales_activo
+        self.randomize_normal_shop_items_enabled = (
+            randomize_normal_shop_items_enabled
         )
-        self.aleatorizar_tiendas_equipamento_activo = (
-            aleatorizar_tiendas_equipamento_activo
+        self.randomize_equipment_shop_items_enabled = (
+            randomize_equipment_shop_items_enabled
         )
         self.scene_transition_mode = scene_transition_mode
 
@@ -85,51 +85,51 @@ class _ExtractionWorker(QThread):
         try:
             root = application_root()
             ensure_mkpsxiso(root)
-            extracted_directory = extraer_imagen(self.image_path, root)
+            extracted_directory = extract_disc_image(self.image_path, root)
             chests_changed = 0
             item_drops_changed = 0
             equipment_drops_changed = 0
             normal_shop_slots_changed = 0
             equipment_shop_items_changed = 0
             scene_transitions_changed = 0
-            if self.aleatorizar_cofres_activo and self.aleatorizar_botines_objetos_activo:
-                chests_changed, item_drops_changed = aleatorizar_cofres_y_botines_objetos(
-                    extracted_directory, self.semilla
+            if self.randomize_chests_enabled and self.randomize_item_drops_enabled:
+                chests_changed, item_drops_changed = randomize_chests_and_item_drops(
+                    extracted_directory, self.seed
                 )
-            elif self.aleatorizar_cofres_activo:
-                chests_changed = aleatorizar_cofres(
-                    extracted_directory, self.semilla
+            elif self.randomize_chests_enabled:
+                chests_changed = randomize_chests(
+                    extracted_directory, self.seed
                 )
-            elif self.aleatorizar_botines_objetos_activo:
-                item_drops_changed = aleatorizar_botines_objetos(
-                    extracted_directory, self.semilla
+            elif self.randomize_item_drops_enabled:
+                item_drops_changed = randomize_item_drops(
+                    extracted_directory, self.seed
                 )
-            if self.aleatorizar_botines_equipamento_activo:
-                equipment_drops_changed = aleatorizar_materiales_botines_equipamento(
-                    extracted_directory, self.semilla
+            if self.randomize_equipment_drops_enabled:
+                equipment_drops_changed = randomize_equipment_drop_materials(
+                    extracted_directory, self.seed
                 )
-            if self.aleatorizar_tiendas_objetos_normales_activo:
-                normal_shop_slots_changed = aleatorizar_tiendas_objetos_normales(
-                    extracted_directory, self.semilla
+            if self.randomize_normal_shop_items_enabled:
+                normal_shop_slots_changed = randomize_normal_shop_items(
+                    extracted_directory, self.seed
                 )
-            if self.aleatorizar_tiendas_equipamento_activo:
-                equipment_shop_items_changed = aleatorizar_materiales_tiendas_equipamento(
-                    extracted_directory, self.semilla
+            if self.randomize_equipment_shop_items_enabled:
+                equipment_shop_items_changed = randomize_equipment_shop_materials(
+                    extracted_directory, self.seed
                 )
             if self.scene_transition_mode == "local":
-                scene_transitions_changed = aleatorizar_cambios_escena_local(
-                    extracted_directory, self.semilla
+                scene_transitions_changed = randomize_local_scene_transitions(
+                    extracted_directory, self.seed
                 )
             elif self.scene_transition_mode == "global_return":
                 scene_transitions_changed = (
-                    aleatorizar_cambios_escena_global_con_retorno(
-                        extracted_directory, self.semilla
+                    randomize_global_scene_transitions_with_return(
+                        extracted_directory, self.seed
                     )
                 )
             elif self.scene_transition_mode == "global_extreme":
                 scene_transitions_changed = (
-                    aleatorizar_cambios_escena_global_extremo(
-                        extracted_directory, self.semilla
+                    randomize_extreme_global_scene_transitions(
+                        extracted_directory, self.seed
                     )
                 )
             self.succeeded.emit(
@@ -157,7 +157,7 @@ class _BuildWorker(QThread):
 
     def run(self) -> None:
         try:
-            output_image = construir_imagen(
+            output_image = build_disc_image(
                 self.extracted_directory,
                 self.output_directory,
                 application_root(),
@@ -168,13 +168,13 @@ class _BuildWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    """Ventana principal con selector de archivos y semilla numérica."""
+    """Main window with a file selector and numeric seed input."""
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("RandLom - A Legend of Mana randomizer")
         self.resize(800, 600)
-        self.semilla: int | None = None
+        self.seed: int | None = None
         self._extraction_worker: _ExtractionWorker | None = None
         self._build_worker: _BuildWorker | None = None
 
@@ -253,7 +253,7 @@ class MainWindow(QMainWindow):
         )
 
         self.generate_button = QPushButton("Generar")
-        self.generate_button.clicked.connect(self.generar)
+        self.generate_button.clicked.connect(self.generate)
 
         layout = QVBoxLayout()
         layout.addLayout(file_layout)
@@ -287,15 +287,15 @@ class MainWindow(QMainWindow):
             self,
             "Agregar semilla",
             "Introduce un valor numérico:",
-            self.semilla if self.semilla is not None else 0,
+            self.seed if self.seed is not None else 0,
         )
         if accepted:
-            self.semilla = value
-            random.seed(self.semilla)
-            self.seed_label.setText(f"Semilla usada: {self.semilla}")
+            self.seed = value
+            random.seed(self.seed)
+            self.seed_label.setText(f"Semilla usada: {self.seed}")
 
-    def generar(self) -> None:
-        # 1. Validar que haya una imagen de disco seleccionada.
+    def generate(self) -> None:
+        # 1. Check that a disc image has been selected.
         selected_file = Path(self.file_path.text())
         if not selected_file.is_file() or selected_file.suffix.lower() not in PS1_IMAGE_EXTENSIONS:
             QMessageBox.warning(
@@ -305,7 +305,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # 2. Confirmar la descarga si mkpsxiso todavía no está instalado.
+        # 2. Confirm the download if mkpsxiso is not installed yet.
         if not mkpsxiso_is_installed(application_root()):
             download_confirmation = QMessageBox.question(
                 self,
@@ -317,24 +317,24 @@ class MainWindow(QMainWindow):
             if download_confirmation != QMessageBox.StandardButton.Yes:
                 return
 
-        # 3. Crear y mostrar una semilla si no se introdujo una.
-        if self.semilla is None:
-            self.semilla = random.randint(0, 2**32 - 1)
-            random.seed(self.semilla)
-            self.seed_label.setText(f"Semilla usada: {self.semilla}")
+        # 3. Generate and display a seed if none was entered.
+        if self.seed is None:
+            self.seed = random.randint(0, 2**32 - 1)
+            random.seed(self.seed)
+            self.seed_label.setText(f"Semilla usada: {self.seed}")
 
-        # 4. Confirmar antes de iniciar la extracción.
+        # 4. Confirm before starting extraction.
         confirmation = QMessageBox.question(
             self,
             "Confirmar generación",
-            f"¿Deseas continuar con la generación usando la semilla {self.semilla}?",
+            f"¿Deseas continuar con la generación usando la semilla {self.seed}?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if confirmation != QMessageBox.StandardButton.Yes:
             return
 
-        # 5. Extraer siempre en la carpeta legend_of_mana del proyecto.
+        # 5. Always extract to the project's legend_of_mana directory.
         self._scene_transition_mode_requested = None
         if self.scene_change_checkbox.isChecked():
             if self.scene_change_local_radio.isChecked():
@@ -347,7 +347,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Extrayendo los archivos de la imagen…")
         self._extraction_worker = _ExtractionWorker(
             selected_file,
-            self.semilla,
+            self.seed,
             self.randomize_objects_checkbox.isChecked()
             and self.randomize_chests_checkbox.isChecked(),
             self.randomize_objects_checkbox.isChecked()
@@ -381,8 +381,7 @@ class MainWindow(QMainWindow):
         self._normal_shop_slots_changed = normal_shop_slots_changed
         self._equipment_shop_items_changed = equipment_shop_items_changed
         self._scene_transitions_changed = scene_transitions_changed
-        # 6. Aquí se añadirán los procesos intermedios pendientes.
-        # 7. Pedir la carpeta de salida justo antes de construir la imagen.
+        # 6. Ask for the output directory immediately before building the image.
         output_directory = QFileDialog.getExistingDirectory(
             self,
             "Seleccionar carpeta para guardar la imagen",
@@ -404,7 +403,7 @@ class MainWindow(QMainWindow):
         self._build_worker.start()
 
     def _generation_succeeded(self, output_image: str) -> None:
-        # 8. Informar que terminó y mostrar dónde se guardó la imagen.
+        # 7. Report completion and show where the image was saved.
         self.generate_button.setEnabled(True)
         self.statusBar().showMessage("Imagen de disco construida", 10000)
         object_summary = ""

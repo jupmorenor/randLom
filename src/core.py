@@ -1,4 +1,4 @@
-"""Operaciones principales del aleatorizador."""
+"""Core randomizer operations."""
 
 from __future__ import annotations
 
@@ -10,30 +10,30 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-def _buscar_ejecutable(raiz_proyecto: Path, nombre: str) -> Path:
-    for candidato in (raiz_proyecto / nombre, raiz_proyecto / "bin" / nombre):
-        if candidato.is_file():
-            return candidato
+def _find_executable(project_root: Path, name: str) -> Path:
+    for candidate in (project_root / name, project_root / "bin" / name):
+        if candidate.is_file():
+            return candidate
 
-    ignoradas = {".git", ".venv", "venv", "__pycache__"}
-    candidatos = sorted(
+    ignored_directories = {".git", ".venv", "venv", "__pycache__"}
+    candidates = sorted(
         (
-            ruta
-            for ruta in raiz_proyecto.rglob(nombre)
-            if not any(parte in ignoradas for parte in ruta.relative_to(raiz_proyecto).parts)
+            path
+            for path in project_root.rglob(name)
+            if not any(part in ignored_directories for part in path.relative_to(project_root).parts)
         ),
-        key=lambda ruta: (len(ruta.relative_to(raiz_proyecto).parts), str(ruta).lower()),
+        key=lambda path: (len(path.relative_to(project_root).parts), str(path).lower()),
     )
-    if candidatos:
-        return candidatos[0]
+    if candidates:
+        return candidates[0]
     raise FileNotFoundError(
-        f"No se encontró {nombre}. Comprueba que mkpsxiso esté instalado en la raíz del proyecto."
+        f"No se encontró {name}. Comprueba que mkpsxiso esté instalado en la raíz del proyecto."
     )
 
 
-def _ejecutar(comando: list[str], directorio_trabajo: Path) -> None:
-    opciones = {
-        "cwd": directorio_trabajo,
+def _run_command(command: list[str], working_directory: Path) -> None:
+    options = {
+        "cwd": working_directory,
         "capture_output": True,
         "text": True,
         "encoding": "utf-8",
@@ -41,78 +41,78 @@ def _ejecutar(comando: list[str], directorio_trabajo: Path) -> None:
         "check": False,
     }
     if sys.platform.startswith("win"):
-        opciones["creationflags"] = subprocess.CREATE_NO_WINDOW
+        options["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-    resultado = subprocess.run(comando, **opciones)
-    if resultado.returncode != 0:
-        detalle = (resultado.stderr or resultado.stdout).strip()
-        if not detalle:
-            detalle = f"El proceso terminó con código {resultado.returncode}."
-        raise RuntimeError(detalle)
+    result = subprocess.run(command, **options)
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout).strip()
+        if not details:
+            details = f"El proceso terminó con código {result.returncode}."
+        raise RuntimeError(details)
 
 
-def generar(imagen_disco: str | Path, raiz_proyecto: str | Path) -> Path:
-    """Extrae una imagen de PS1 en legend_of_mana y crea allí el XML de proyecto."""
-    imagen = Path(imagen_disco).expanduser().resolve()
-    raiz = Path(raiz_proyecto).expanduser().resolve()
-    if not imagen.is_file():
-        raise FileNotFoundError(f"No se encontró la imagen de disco: {imagen}")
+def extract_disc_image(disc_image: str | Path, project_root: str | Path) -> Path:
+    """Extract a PS1 image to legend_of_mana and create the project XML there."""
+    image = Path(disc_image).expanduser().resolve()
+    root = Path(project_root).expanduser().resolve()
+    if not image.is_file():
+        raise FileNotFoundError(f"No se encontró la imagen de disco: {image}")
 
-    destino = raiz / "legend_of_mana"
-    destino.mkdir(parents=True, exist_ok=True)
-    ejecutable = _buscar_ejecutable(
-        raiz, "dumpsxiso.exe" if sys.platform.startswith("win") else "dumpsxiso"
+    destination = root / "legend_of_mana"
+    destination.mkdir(parents=True, exist_ok=True)
+    executable = _find_executable(
+        root, "dumpsxiso.exe" if sys.platform.startswith("win") else "dumpsxiso"
     )
-    xml_proyecto = destino / "legend_of_mana.xml"
+    project_xml = destination / "legend_of_mana.xml"
 
-    _ejecutar(
-        [str(ejecutable), "-x", str(destino), "-s", str(xml_proyecto), str(imagen)],
-        raiz,
+    _run_command(
+        [str(executable), "-x", str(destination), "-s", str(project_xml), str(image)],
+        root,
     )
-    return destino
+    return destination
 
 
-def construir_imagen(
-    carpeta_proyecto: str | Path,
-    carpeta_salida: str | Path,
-    raiz_proyecto: str | Path,
+def build_disc_image(
+    project_directory: str | Path,
+    output_directory: str | Path,
+    project_root: str | Path,
 ) -> Path:
-    """Construye un BIN/CUE desde legend_of_mana en la carpeta elegida."""
-    fuente = Path(carpeta_proyecto).expanduser().resolve()
-    salida = Path(carpeta_salida).expanduser().resolve()
-    raiz = Path(raiz_proyecto).expanduser().resolve()
-    xml_proyecto = fuente / "legend_of_mana.xml"
-    if not xml_proyecto.is_file():
-        raise FileNotFoundError(f"No se encontró el proyecto XML: {xml_proyecto}")
-    if not salida.is_dir():
-        raise NotADirectoryError(f"La carpeta de salida no existe: {salida}")
+    """Build a BIN/CUE from legend_of_mana in the selected directory."""
+    source = Path(project_directory).expanduser().resolve()
+    output = Path(output_directory).expanduser().resolve()
+    root = Path(project_root).expanduser().resolve()
+    project_xml = source / "legend_of_mana.xml"
+    if not project_xml.is_file():
+        raise FileNotFoundError(f"No se encontró el proyecto XML: {project_xml}")
+    if not output.is_dir():
+        raise NotADirectoryError(f"La carpeta de salida no existe: {output}")
 
-    nombre_base = "legend_of_mana"
-    imagen_salida = salida / f"{nombre_base}.bin"
-    cue_salida = salida / f"{nombre_base}.cue"
-    existentes = [archivo for archivo in (imagen_salida, cue_salida) if archivo.exists()]
-    if existentes:
-        rutas = ", ".join(str(archivo) for archivo in existentes)
+    base_name = "legend_of_mana"
+    output_image = output / f"{base_name}.bin"
+    output_cue = output / f"{base_name}.cue"
+    existing_files = [file for file in (output_image, output_cue) if file.exists()]
+    if existing_files:
+        paths = ", ".join(str(file) for file in existing_files)
         raise FileExistsError(
-            f"Ya existen archivos de salida en la carpeta seleccionada: {rutas}. "
+            f"Ya existen archivos de salida en la carpeta seleccionada: {paths}. "
             "Elige otra carpeta para evitar sobrescribirlos."
         )
 
-    ejecutable = _buscar_ejecutable(
-        raiz, "mkpsxiso.exe" if sys.platform.startswith("win") else "mkpsxiso"
+    executable = _find_executable(
+        root, "mkpsxiso.exe" if sys.platform.startswith("win") else "mkpsxiso"
     )
-    _ejecutar(
+    _run_command(
         [
-            str(ejecutable),
+            str(executable),
             "-o",
-            str(imagen_salida),
+            str(output_image),
             "-c",
-            str(cue_salida),
-            str(xml_proyecto),
+            str(output_cue),
+            str(project_xml),
         ],
-        salida,
+        output,
     )
-    return imagen_salida
+    return output_image
 
 
 # Scene transition decoding follows lom-decomp/tools/data/scenes/event_opcodes.py
@@ -318,36 +318,36 @@ def _scene_paths_from_manifest(project_directory: Path) -> list[Path]:
     return scenes
 
 
-def _componentes_conexas(
-    nodos: list[int], adyacencia: dict[int, set[int]]
+def _connected_components(
+    nodes: list[int], adjacency: dict[int, set[int]]
 ) -> dict[int, int]:
     """Return weak component IDs for a directed scene graph."""
-    inversa = {nodo: set() for nodo in nodos}
-    for origen, destinos in adyacencia.items():
-        for destino in destinos:
-            if destino in inversa:
-                inversa[destino].add(origen)
+    reverse_adjacency = {node: set() for node in nodes}
+    for origin, destinations in adjacency.items():
+        for destination in destinations:
+            if destination in reverse_adjacency:
+                reverse_adjacency[destination].add(origin)
 
-    componentes: dict[int, int] = {}
-    componente_id = 0
-    for raiz in nodos:
-        if raiz in componentes:
+    components: dict[int, int] = {}
+    component_id = 0
+    for root in nodes:
+        if root in components:
             continue
-        componentes[raiz] = componente_id
-        pendientes = [raiz]
-        while pendientes:
-            actual = pendientes.pop()
-            vecinos = adyacencia.get(actual, set()) | inversa.get(actual, set())
-            for vecino in vecinos:
-                if vecino not in componentes:
-                    componentes[vecino] = componente_id
-                    pendientes.append(vecino)
-        componente_id += 1
-    return componentes
+        components[root] = component_id
+        pending_positions = [root]
+        while pending_positions:
+            current_node = pending_positions.pop()
+            neighbors = adjacency.get(current_node, set()) | reverse_adjacency.get(current_node, set())
+            for neighbor in neighbors:
+                if neighbor not in components:
+                    components[neighbor] = component_id
+                    pending_positions.append(neighbor)
+        component_id += 1
+    return components
 
 
-def aleatorizar_cambios_escena_local(
-    carpeta_proyecto: str | Path, semilla: int
+def randomize_local_scene_transitions(
+    project_directory: str | Path, seed: int
 ) -> int:
     """Randomize room links within their source land without splitting room groups.
 
@@ -358,7 +358,7 @@ def aleatorizar_cambios_escena_local(
     permutation is checked to keep that group connected. Every room retains
     its original number of outgoing transitions and every land exit remains.
     """
-    project = Path(carpeta_proyecto).expanduser().resolve()
+    project = Path(project_directory).expanduser().resolve()
     ana = project / "ANA"
     manifest_scenes = _scene_paths_from_manifest(project)
     scene_by_id = {
@@ -442,9 +442,9 @@ def aleatorizar_cambios_escena_local(
     component_by_location: dict[str, dict[int, int]] = {}
     for location, nodes in nodes_by_location.items():
         graph = adjacency_by_location.get(location, {node: set() for node in nodes})
-        component_by_location[location] = _componentes_conexas(nodes, graph)
+        component_by_location[location] = _connected_components(nodes, graph)
 
-    rng = random.Random(semilla)
+    rng = random.Random(seed)
     changed_by_path: dict[Path, bytearray] = {}
     changed = 0
     edge_groups: dict[tuple[str, int, int], list[int]] = {}
@@ -521,8 +521,8 @@ def aleatorizar_cambios_escena_local(
     return changed
 
 
-def aleatorizar_cambios_escena_global_con_retorno(
-    carpeta_proyecto: str | Path, semilla: int
+def randomize_global_scene_transitions_with_return(
+    project_directory: str | Path, seed: int
 ) -> int:
     """Swap reciprocal doorway links between lands while keeping each return.
 
@@ -533,7 +533,7 @@ def aleatorizar_cambios_escena_global_con_retorno(
     audio and spawn values. This makes the doorway reached on arrival point back
     through the paired transition. Ambiguous or dynamic transitions are kept.
     """
-    project = Path(carpeta_proyecto).expanduser().resolve()
+    project = Path(project_directory).expanduser().resolve()
     ana = project / "ANA"
     manifest_scenes = _scene_paths_from_manifest(project)
     scene_by_id = {
@@ -671,7 +671,7 @@ def aleatorizar_cambios_escena_global_con_retorno(
             if count and first in adjacency and second in adjacency:
                 adjacency[first].add(second)
                 adjacency[second].add(first)
-        return _componentes_conexas(scene_nodes, adjacency)
+        return _connected_components(scene_nodes, adjacency)
 
     def swap_keeps_groups_connected(
         a: int, b: int, x: int, y: int, left: int, right: int
@@ -704,7 +704,7 @@ def aleatorizar_cambios_escena_global_con_retorno(
                 pending.append(neighbor)
         return reached == affected_nodes
 
-    rng = random.Random(semilla)
+    rng = random.Random(seed)
     rng.shuffle(reciprocal_pairs)
     consumed: set[int] = set()
     new_payload_by_record: dict[int, int] = {}
@@ -783,8 +783,8 @@ def aleatorizar_cambios_escena_global_con_retorno(
     return changed_destinations
 
 
-def aleatorizar_cambios_escena_global_extremo(
-    carpeta_proyecto: str | Path, semilla: int
+def randomize_extreme_global_scene_transitions(
+    project_directory: str | Path, seed: int
 ) -> int:
     """Permute complete compatible scene-transition payloads globally.
 
@@ -795,7 +795,7 @@ def aleatorizar_cambios_escena_global_extremo(
     scene destinations. Dynamic operands and payloads whose operand formats do
     not match another transition are left untouched.
     """
-    project = Path(carpeta_proyecto).expanduser().resolve()
+    project = Path(project_directory).expanduser().resolve()
     ana = project / "ANA"
     manifest_scenes = _scene_paths_from_manifest(project)
     scene_by_id = {
@@ -908,7 +908,7 @@ def aleatorizar_cambios_escena_global_extremo(
     if not records:
         raise RuntimeError("No se encontraron transiciones globales compatibles.")
 
-    rng = random.Random(semilla)
+    rng = random.Random(seed)
     payload_for_record: dict[int, int] = {}
     for indexes in groups.values():
         if len(indexes) < 2:
@@ -956,8 +956,8 @@ def aleatorizar_cambios_escena_global_extremo(
     return changed
 
 
-# Formato y firma tomados de lom-decomp/tools/data/scenes/layout.py.
-# FieldLayoutRecord tiene 48 bytes; scripts[4] (item_id) comienza en el byte 24.
+# Format and signature taken from lom-decomp/tools/data/scenes/layout.py.
+# FieldLayoutRecord is 48 bytes; scripts[4] (item_id) starts at byte 24.
 _FIELD_LAYOUT_RECORD = struct.Struct("<IHBBIHH16H")
 _CHEST_INITIALIZER = bytes.fromhex(
     "40 84 20 c0 "
@@ -966,8 +966,8 @@ _CHEST_INITIALIZER = bytes.fromhex(
 )
 
 
-def _encontrar_cofres_escena(data: bytes) -> list[tuple[int, int]]:
-    """Devuelve (offset del item_id dentro del IMG, item_id) para cada cofre confirmado."""
+def _find_scene_chests(data: bytes) -> list[tuple[int, int]]:
+    """Return (item_id offset in the IMG, item_id) for each confirmed chest."""
     if len(data) < 40:
         return []
     offsets = struct.unpack_from("<10I", data)
@@ -1012,59 +1012,59 @@ def _encontrar_cofres_escena(data: bytes) -> list[tuple[int, int]]:
     return chests
 
 
-def aleatorizar_cofres(carpeta_proyecto: str | Path, semilla: int) -> int:
-    """Baraja los item_id de los cofres y los escribe en sus archivos IMG originales.
+def randomize_chests(project_directory: str | Path, seed: int) -> int:
+    """Shuffle chest item_ids and write them to their original IMG files.
 
-    La detección y los offsets siguen el formato documentado por lom-decomp. La
-    lista de objetos se conserva como multiconjunto, y la semilla hace que la
-    permutación pueda reproducirse.
+    Detection and offsets follow the format documented by lom-decomp. The item
+    list is preserved as a multiset, and the seed makes the permutation
+    reproducible.
     """
-    ana = Path(carpeta_proyecto).expanduser().resolve() / "ANA"
+    ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
         raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
 
-    escenas = sorted(
+    scenes = sorted(
         path
         for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG")
         for path in ana.glob(pattern)
         if path.is_file()
     )
-    cambios: dict[Path, tuple[bytearray, list[tuple[int, int]]]] = {}
-    ids_originales: list[int] = []
-    for escena in escenas:
-        data = escena.read_bytes()
-        cofres = _encontrar_cofres_escena(data)
-        if cofres:
+    changed_files: dict[Path, tuple[bytearray, list[tuple[int, int]]]] = {}
+    original_ids: list[int] = []
+    for scene in scenes:
+        data = scene.read_bytes()
+        chests = _find_scene_chests(data)
+        if chests:
             mutable = bytearray(data)
-            cambios[escena] = (mutable, cofres)
-            ids_originales.extend(item_id for _, item_id in cofres)
+            changed_files[scene] = (mutable, chests)
+            original_ids.extend(item_id for _, item_id in chests)
 
-    if not ids_originales:
+    if not original_ids:
         raise RuntimeError("No se encontraron cofres compatibles para aleatorizar.")
 
-    ids_aleatorios = ids_originales.copy()
-    random.Random(semilla).shuffle(ids_aleatorios)
+    randomized_ids = original_ids.copy()
+    random.Random(seed).shuffle(randomized_ids)
     cursor = 0
-    for mutable, cofres in cambios.values():
-        for offset, _ in cofres:
-            struct.pack_into("<H", mutable, offset, ids_aleatorios[cursor])
+    for mutable, chests in changed_files.values():
+        for offset, _ in chests:
+            struct.pack_into("<H", mutable, offset, randomized_ids[cursor])
             cursor += 1
 
-    for escena, (mutable, _) in cambios.items():
-        escena.write_bytes(mutable)
-    return len(ids_originales)
+    for scene, (mutable, _) in changed_files.items():
+        scene.write_bytes(mutable)
+    return len(original_ids)
 
 
 _BATTLE_RESOURCE_ID = 1
 _MONSTER_HEADER_SIZE = 0x54
 
 
-def _ids_plantillas_batalla(data: bytes, offsets: tuple[int, ...]) -> set[int] | None:
-    """Lee IDs de plantillas de batalla si la escena tiene un único recurso de batalla.
+def _battle_template_ids(data: bytes, offsets: tuple[int, ...]) -> set[int] | None:
+    """Read battle template IDs when the scene has a single battle resource.
 
-    Sigue read_resource_directory() y read_battle_resource() de
-    lom-decomp/tools/data/scenes/scene_resources.py. None indica que el vínculo
-    es ambiguo o que la estructura no se puede validar con seguridad.
+    Follows read_resource_directory() and read_battle_resource() from
+    lom-decomp/tools/data/scenes/scene_resources.py. None indicates an
+    ambiguous link or a structure that cannot be safely validated.
     """
     records_start, actors_start = offsets[4], offsets[5]
     section = data[records_start:actors_start]
@@ -1121,8 +1121,8 @@ def _ids_plantillas_batalla(data: bytes, offsets: tuple[int, ...]) -> set[int] |
     return template_ids
 
 
-def _encontrar_botines_objetos_escena(data: bytes) -> list[tuple[int, int]]:
-    """Devuelve (offset del valor, item kind actual) de botines directos."""
+def _find_scene_item_drops(data: bytes) -> list[tuple[int, int]]:
+    """Return (value offset, current item kind) for direct item drops."""
     if len(data) < 40:
         return []
     section_offsets = struct.unpack_from("<10I", data)
@@ -1199,8 +1199,8 @@ def _encontrar_botines_objetos_escena(data: bytes) -> list[tuple[int, int]]:
     return result
 
 
-def _encontrar_materiales_botines_equipamento_escena(data: bytes) -> list[int]:
-    """Encuentra el campo material de armas/armaduras en recompensas de enemigos."""
+def _find_scene_equipment_drop_materials(data: bytes) -> list[int]:
+    """Find the weapon/armor material field in enemy rewards."""
     if len(data) < 40:
         return []
     section_offsets = struct.unpack_from("<10I", data)
@@ -1232,7 +1232,7 @@ def _encontrar_materiales_botines_equipamento_escena(data: bytes) -> list[int]:
         if len(resource) >= 2
         and struct.unpack_from("<H", resource)[0] == _BATTLE_RESOURCE_ID
     ]
-    # Si no se puede establecer una asociación inequívoca de recursos, no modificar.
+        # Leave the scene unchanged if its resource association is ambiguous.
     if len(battles) != 1:
         return []
 
@@ -1298,21 +1298,21 @@ def _encontrar_materiales_botines_equipamento_escena(data: bytes) -> list[int]:
             continue
         info = struct.unpack_from("<I", data, item_offset + 0x14)[0]
         category = (info >> 8) & 0x3
-        # En este campo solo armaduras (1) y armas (0) tienen material aleatorizable.
+        # Only armor (1) and weapons (0) have a randomizable material in this field.
         if category in (0, 1):
             material_offsets.append(item_offset + 0x14)
     return material_offsets
 
 
-def aleatorizar_materiales_botines_equipamento(
-    carpeta_proyecto: str | Path, semilla: int
+def randomize_equipment_drop_materials(
+    project_directory: str | Path, seed: int
 ) -> int:
-    """Asigna materiales primarios aleatorios a armas/armaduras de botines."""
-    ana = Path(carpeta_proyecto).expanduser().resolve() / "ANA"
+    """Assign random primary materials to weapons/armor in drops."""
+    ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
         raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
 
-    rng = random.Random(semilla)
+    rng = random.Random(seed)
     changed: dict[Path, bytearray] = {}
     count = 0
     for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG"):
@@ -1320,13 +1320,13 @@ def aleatorizar_materiales_botines_equipamento(
             if not path.is_file():
                 continue
             original = path.read_bytes()
-            offsets = _encontrar_materiales_botines_equipamento_escena(original)
+            offsets = _find_scene_equipment_drop_materials(original)
             if not offsets:
                 continue
             mutable = bytearray(original)
             for offset in offsets:
                 info = struct.unpack_from("<I", mutable, offset)[0]
-                material = rng.randrange(64)  # Los IDs 0–63 son materiales primarios.
+                material = rng.randrange(64)  # IDs 0–63 are primary materials.
                 info = (info & ~(0x3F << 16)) | (material << 16)
                 struct.pack_into("<I", mutable, offset, info)
                 count += 1
@@ -1341,14 +1341,14 @@ def aleatorizar_materiales_botines_equipamento(
     return count
 
 
-def _aleatorizar_destinos_objeto(
-    carpeta_proyecto: str | Path,
-    semilla: int,
-    incluir_cofres: bool,
-    incluir_botines: bool,
+def _randomize_item_destinations(
+    project_directory: str | Path,
+    seed: int,
+    include_chests: bool,
+    include_item_drops: bool,
 ) -> tuple[int, int]:
-    """Asigna IDs del mismo catálogo a cofres y/o botines con reemplazo."""
-    ana = Path(carpeta_proyecto).expanduser().resolve() / "ANA"
+    """Assign IDs from the same catalog to chests and/or drops with replacement."""
+    ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
         raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
     scenes = sorted(
@@ -1360,31 +1360,31 @@ def _aleatorizar_destinos_objeto(
 
     for path in scenes:
         data = path.read_bytes()
-        if incluir_cofres:
-            for offset, item_id in _encontrar_cofres_escena(data):
+        if include_chests:
+            for offset, item_id in _find_scene_chests(data):
                 destinations.append((path, offset, item_id, 2))
                 changed.setdefault(path, bytearray(data))
-        if incluir_botines:
-            for offset, item_id in _encontrar_botines_objetos_escena(data):
+        if include_item_drops:
+            for offset, item_id in _find_scene_item_drops(data):
                 destinations.append((path, offset, item_id, 1))
                 changed.setdefault(path, bytearray(data))
 
     chest_count = sum(width == 2 for _, _, _, width in destinations)
     drop_count = len(destinations) - chest_count
     if not destinations:
-        if incluir_cofres and incluir_botines:
+        if include_chests and include_item_drops:
             raise RuntimeError(
                 "No se encontraron cofres ni botines de objetos compatibles."
             )
-        if incluir_cofres:
+        if include_chests:
             raise RuntimeError("No se encontraron cofres compatibles para aleatorizar.")
         raise RuntimeError("No se encontraron botines de objetos compatibles.")
 
     item_kinds = tuple(range(0xFF))
-    rng = random.Random(semilla)
+    rng = random.Random(seed)
     for path, offset, current_item, width in destinations:
-        # Elegimos con reemplazo entre destinos; solo evitamos que un destino
-        # conserve su valor original por azar.
+        # Choose with replacement across destinations; only avoid a destination
+        # keeping its original value by chance.
         replacement_pool = item_kinds[:current_item] + item_kinds[current_item + 1:]
         replacement = rng.choice(replacement_pool)
         if width == 2:
@@ -1397,25 +1397,25 @@ def _aleatorizar_destinos_objeto(
     return chest_count, drop_count
 
 
-def aleatorizar_botines_objetos(carpeta_proyecto: str | Path, semilla: int) -> int:
-    """Aleatoriza botines directos de enemigos; el manejador 3 no se altera."""
-    _, drop_count = _aleatorizar_destinos_objeto(
-        carpeta_proyecto, semilla, incluir_cofres=False, incluir_botines=True
+def randomize_item_drops(project_directory: str | Path, seed: int) -> int:
+    """Randomize direct enemy drops; handler 3 is left unchanged."""
+    _, drop_count = _randomize_item_destinations(
+        project_directory, seed, include_chests=False, include_item_drops=True
     )
     return drop_count
 
 
-def aleatorizar_cofres_y_botines_objetos(
-    carpeta_proyecto: str | Path, semilla: int
+def randomize_chests_and_item_drops(
+    project_directory: str | Path, seed: int
 ) -> tuple[int, int]:
-    """Aleatoriza cofres y botines directos desde un mismo pool con reemplazo."""
-    return _aleatorizar_destinos_objeto(
-        carpeta_proyecto, semilla, incluir_cofres=True, incluir_botines=True
+    """Randomize chests and direct drops from the same pool with replacement."""
+    return _randomize_item_destinations(
+        project_directory, seed, include_chests=True, include_item_drops=True
     )
 
 
-def _recursos_escena(data: bytes) -> tuple[int, list[tuple[int, bytes]]] | None:
-    """Devuelve recursos de una escena con su offset absoluto dentro del IMG."""
+def _scene_resources(data: bytes) -> tuple[int, list[tuple[int, bytes]]] | None:
+    """Return a scene's resources with their absolute offsets in the IMG."""
     if len(data) < 40:
         return None
     offsets = struct.unpack_from("<10I", data)
@@ -1447,10 +1447,10 @@ def _recursos_escena(data: bytes) -> tuple[int, list[tuple[int, bytes]]] | None:
     return records_start, resources
 
 
-def _entradas_tienda(
+def _shop_entries(
     resource: bytes, absolute_offset: int
 ) -> list[tuple[int, int]] | None:
-    """Devuelve (offset de palabra, palabra) para cada slot físico de tienda."""
+    """Return (word offset, word) for each physical shop slot."""
     if len(resource) < 8:
         return None
     directory_size = struct.unpack_from("<I", resource, 4)[0]
@@ -1477,76 +1477,76 @@ def _entradas_tienda(
     return entries
 
 
-def aleatorizar_tiendas_objetos_normales(
-    carpeta_proyecto: str | Path, semilla: int
+def randomize_normal_shop_items(
+    project_directory: str | Path, seed: int
 ) -> int:
-    """Permuta objetos normales entre slots de tienda y conserva sus precios."""
-    ana = Path(carpeta_proyecto).expanduser().resolve() / "ANA"
+    """Permute normal items between shop slots while preserving their prices."""
+    ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
         raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
 
-    destinos: list[tuple[Path, int, int]] = []
+    destinations: list[tuple[Path, int, int]] = []
     for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG"):
         for path in sorted(ana.glob(pattern)):
             if not path.is_file():
                 continue
             data = path.read_bytes()
-            parsed = _recursos_escena(data)
+            parsed = _scene_resources(data)
             if parsed is None:
                 continue
             _, resources = parsed
             for absolute_offset, resource in resources:
                 if struct.unpack_from("<H", resource)[0] != 0x000A:
                     continue
-                entries = _entradas_tienda(resource, absolute_offset)
+                entries = _shop_entries(resource, absolute_offset)
                 if entries is None:
                     continue
                 for offset, word in entries:
-                    # Bit 8=0: el byte bajo es un item kind global, no plantilla.
+                    # Bit 8=0: the low byte is a global item kind, not a template.
                     if not (word & 0x100) and (word & 0xFF) != 0xFF:
-                        destinos.append((path, offset, word))
+                        destinations.append((path, offset, word))
 
-    if not destinos:
+    if not destinations:
         raise RuntimeError("No se encontraron slots de objetos normales en tiendas.")
 
-    objetos = [word & 0xFF for _, _, word in destinos]
-    random.Random(semilla).shuffle(objetos)
-    cambios: dict[Path, bytearray] = {}
-    for (path, offset, word), item_id in zip(destinos, objetos):
-        if path not in cambios:
-            cambios[path] = bytearray(path.read_bytes())
-        nueva_palabra = (word & ~0xFF) | item_id
-        struct.pack_into("<I", cambios[path], offset, nueva_palabra)
+    items = [word & 0xFF for _, _, word in destinations]
+    random.Random(seed).shuffle(items)
+    changed_files: dict[Path, bytearray] = {}
+    for (path, offset, word), item_id in zip(destinations, items):
+        if path not in changed_files:
+            changed_files[path] = bytearray(path.read_bytes())
+        new_word = (word & ~0xFF) | item_id
+        struct.pack_into("<I", changed_files[path], offset, new_word)
 
-    for path, data in cambios.items():
+    for path, data in changed_files.items():
         path.write_bytes(data)
-    return len(destinos)
+    return len(destinations)
 
 
-def _tablas_equipo_desde_escenas(ana: Path) -> tuple[bytes, bytes]:
-    """Carga las tablas comunes de armas/armaduras e instrumentos del FIELD."""
-    necesidades = {
+def _equipment_tables_from_scenes(ana: Path) -> tuple[bytes, bytes]:
+    """Load the shared FIELD tables for weapons/armor and instruments."""
+    required_sizes = {
         0x0004: 4 + 32 * 0x0C + 64 * 0x14,
         0x000F: 4 + 64 + 64 * 4 * 2,
     }
-    encontrados: dict[int, set[bytes]] = {resource_id: set() for resource_id in necesidades}
+    found_tables: dict[int, set[bytes]] = {resource_id: set() for resource_id in required_sizes}
     for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG"):
         for path in sorted(ana.glob(pattern)):
             if not path.is_file():
                 continue
-            parsed = _recursos_escena(path.read_bytes())
+            parsed = _scene_resources(path.read_bytes())
             if parsed is None:
                 continue
             _, resources = parsed
             for _, resource in resources:
                 resource_id = struct.unpack_from("<H", resource)[0]
-                if resource_id not in necesidades:
+                if resource_id not in required_sizes:
                     continue
-                required_size = necesidades[resource_id]
+                required_size = required_sizes[resource_id]
                 if len(resource) >= required_size:
-                    encontrados[resource_id].add(resource[:required_size])
+                    found_tables[resource_id].add(resource[:required_size])
 
-    for resource_id, tables in encontrados.items():
+    for resource_id, tables in found_tables.items():
         if not tables:
             raise RuntimeError(
                 f"No se encontró la tabla de generación FIELD 0x{resource_id:04X}."
@@ -1555,18 +1555,18 @@ def _tablas_equipo_desde_escenas(ana: Path) -> tuple[bytes, bytes]:
             raise RuntimeError(
                 f"Se encontraron versiones incompatibles de la tabla FIELD 0x{resource_id:04X}."
             )
-    return next(iter(encontrados[0x0004])), next(iter(encontrados[0x000F]))
+    return next(iter(found_tables[0x0004])), next(iter(found_tables[0x000F]))
 
 
-def _recalcular_item_equipo(
+def _recalculate_equipment_item(
     data: bytearray,
     record_offset: int,
     info: int,
     material: int,
-    tabla_item: bytes,
-    tabla_instrumento: bytes,
+    item_table: bytes,
+    instrument_table: bytes,
 ) -> None:
-    """Actualiza derivados dependientes del material según las rutinas FIELD."""
+    """Update material-dependent values according to the FIELD routines."""
     category = (info >> 8) & 0x3
     item_type = (info >> 10) & 0x3F
     if category == 2:
@@ -1574,7 +1574,7 @@ def _recalcular_item_equipo(
             return
         # FieldItemGridTable.pairs[material][instrument_type][1].
         pair_offset = 4 + 64 + (material * 4 + item_type) * 2
-        data[record_offset + 0x26] = tabla_instrumento[pair_offset + 1]
+        data[record_offset + 0x26] = instrument_table[pair_offset + 1]
         return
 
     if category not in (0, 1) or item_type >= 16:
@@ -1584,11 +1584,11 @@ def _recalcular_item_equipo(
     type_offset = type_table_offset + item_type * 0x0C
     material_table_offset = 4 + 32 * 0x0C
     material_offset = material_table_offset + material * 0x14
-    type_weights = tabla_item[type_offset + 4:type_offset + 8]
-    type_factors = tabla_item[type_offset + 8:type_offset + 12]
-    divisor = struct.unpack_from("<H", tabla_item, material_offset + 2)[0]
-    material_weights = tabla_item[material_offset + 4:material_offset + 8]
-    multipliers = tabla_item[material_offset + 8:material_offset + 12]
+    type_weights = item_table[type_offset + 4:type_offset + 8]
+    type_factors = item_table[type_offset + 8:type_offset + 12]
+    divisor = struct.unpack_from("<H", item_table, material_offset + 2)[0]
+    material_weights = item_table[material_offset + 4:material_offset + 8]
+    multipliers = item_table[material_offset + 8:material_offset + 12]
 
     if category == 0:
         if divisor == 0:
@@ -1615,24 +1615,24 @@ def _recalcular_item_equipo(
         data[record_offset + 0x30 + index] = (factor * multiplier) >> 6
 
 
-def aleatorizar_materiales_tiendas_equipamento(
-    carpeta_proyecto: str | Path, semilla: int
+def randomize_equipment_shop_materials(
+    project_directory: str | Path, seed: int
 ) -> int:
-    """Cambia materiales de armas, armaduras e instrumentos vendidos en tiendas."""
-    ana = Path(carpeta_proyecto).expanduser().resolve() / "ANA"
+    """Change materials for weapons, armor, and instruments sold in shops."""
+    ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
         raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
 
-    tabla_item, tabla_instrumento = _tablas_equipo_desde_escenas(ana)
-    rng = random.Random(semilla)
-    cambios: dict[Path, bytearray] = {}
+    item_table, instrument_table = _equipment_tables_from_scenes(ana)
+    rng = random.Random(seed)
+    changed_files: dict[Path, bytearray] = {}
     material_offsets: dict[Path, set[int]] = {}
     for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG"):
         for path in sorted(ana.glob(pattern)):
             if not path.is_file():
                 continue
             data = path.read_bytes()
-            parsed = _recursos_escena(data)
+            parsed = _scene_resources(data)
             if parsed is None:
                 continue
             _, resources = parsed
@@ -1656,7 +1656,7 @@ def aleatorizar_materiales_tiendas_equipamento(
                 continue
 
             for shop_offset, shop in shop_resources:
-                entries = _entradas_tienda(shop, shop_offset)
+                entries = _shop_entries(shop, shop_offset)
                 if entries is None:
                     continue
                 for _, word in entries:
@@ -1678,9 +1678,9 @@ def aleatorizar_materiales_tiendas_equipamento(
                         )
 
             for offset in sorted(material_offsets.get(path, set())):
-                if path not in cambios:
-                    cambios[path] = bytearray(data)
-                info = struct.unpack_from("<I", cambios[path], offset)[0]
+                if path not in changed_files:
+                    changed_files[path] = bytearray(data)
+                info = struct.unpack_from("<I", changed_files[path], offset)[0]
                 current_material = (info >> 16) & 0x3F
                 category = (info >> 8) & 0x3
                 if category in (0, 1):
@@ -1689,7 +1689,7 @@ def aleatorizar_materiales_tiendas_equipamento(
                         value for value in range(64)
                         if value != current_material
                         and struct.unpack_from(
-                            "<H", tabla_item,
+                            "<H", item_table,
                             material_table_offset + value * 0x14 + 2,
                         )[0] != 0
                     ]
@@ -1702,10 +1702,10 @@ def aleatorizar_materiales_tiendas_equipamento(
                     continue
                 material = rng.choice(candidates)
                 info = (info & ~(0x3F << 16)) | (material << 16)
-                struct.pack_into("<I", cambios[path], offset, info)
-                _recalcular_item_equipo(
-                    cambios[path], offset - 0x14, info, material,
-                    tabla_item, tabla_instrumento,
+                struct.pack_into("<I", changed_files[path], offset, info)
+                _recalculate_equipment_item(
+                    changed_files[path], offset - 0x14, info, material,
+                    item_table, instrument_table,
                 )
 
     count = sum(len(offsets) for offsets in material_offsets.values())
@@ -1713,17 +1713,17 @@ def aleatorizar_materiales_tiendas_equipamento(
         raise RuntimeError(
             "No se encontraron objetos de equipamento compatibles en tiendas."
         )
-    for path, data in cambios.items():
+    for path, data in changed_files.items():
         path.write_bytes(data)
     return count
 
 
-def _encontrar_enemigos_escena(
+def _find_scene_enemies(
     data: bytes,
 ) -> list[tuple[int, tuple[int, int, int]]]:
-    """Devuelve (offset del registro, identidad) de cada enemigo enlazado.
+    """Return (record offset, identity) for each linked enemy.
 
-    La identidad contiene template_id, selector de recursos y paleta.
+    The identity contains the template_id, resource selector, and palette.
     """
     if len(data) < 40:
         return []
@@ -1740,7 +1740,7 @@ def _encontrar_enemigos_escena(
     if event_offset - layout_offset != 4 + record_count * _FIELD_LAYOUT_RECORD.size:
         return []
 
-    template_ids = _ids_plantillas_batalla(data, offsets)
+    template_ids = _battle_template_ids(data, offsets)
     if not template_ids:
         return []
     event_scripts = data[event_offset:offsets[2]]
@@ -1752,7 +1752,7 @@ def _encontrar_enemigos_escena(
         kind = (control >> 4) & 0xF
         if kind not in (0, 7):
             continue
-        # No incluir los cofres, aunque su tipo de actor sea 0 o 7.
+        # Exclude chests, even when their actor type is 0 or 7.
         if (source & 7) == 5 and scripts[15] != 0xFFFF:
             initializer = scripts[15]
             if initializer & 0x8000:
@@ -1764,7 +1764,7 @@ def _encontrar_enemigos_escena(
                         continue
         template_id = (control >> 8) & 0xFF
         if template_id in template_ids:
-            # Conservar juntos la plantilla de batalla y su recurso visual.
+            # Keep the battle template and its visual resource together.
             palette = (control >> 24) & 0xF
             enemies.append((record_offset, (template_id, source, palette)))
     return enemies
