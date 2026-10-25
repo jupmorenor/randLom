@@ -1,6 +1,7 @@
 """Application GUI."""
 
 import random
+import shutil
 import sys
 from pathlib import Path
 
@@ -486,6 +487,17 @@ class MainWindow(QMainWindow):
             self._show_status("status_build_cancelled", 10000)
             return
 
+        extracted_path = Path(extracted_directory).resolve()
+        output_path = Path(output_directory).resolve()
+        if output_path == extracted_path or extracted_path in output_path.parents:
+            self.generate_button.setEnabled(True)
+            QMessageBox.warning(
+                self,
+                get_text("output_directory_title"),
+                get_text("output_inside_extracted_directory"),
+            )
+            return
+
         self._show_status("status_building")
         self._build_worker = _BuildWorker(
             Path(extracted_directory),
@@ -497,7 +509,22 @@ class MainWindow(QMainWindow):
         self._build_worker.start()
 
     def _generation_succeeded(self, output_image: str) -> None:
-        # 7. Report completion and show where the image was saved.
+        # 7. Remove extracted source files after the image has been saved.
+        extracted_directory = application_root() / "legend_of_mana"
+        try:
+            shutil.rmtree(extracted_directory)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            QMessageBox.warning(
+                self,
+                get_text("cleanup_failed_title"),
+                get_text("cleanup_failed_message").format(
+                    directory=extracted_directory
+                ),
+            )
+
+        # 8. Report completion and show where the image was saved.
         self.generate_button.setEnabled(True)
         self._show_status("status_image_built", 10000)
         object_summary = ""
