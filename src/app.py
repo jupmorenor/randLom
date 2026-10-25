@@ -38,6 +38,7 @@ from src.core import (
     randomize_normal_shop_items,
     build_disc_image,
     extract_disc_image,
+    is_legend_of_mana_disc,
 )
 from src.mkpsxiso import ensure_mkpsxiso, mkpsxiso_is_installed
 from src.lang import get_language, get_text, set_language
@@ -384,6 +385,15 @@ class MainWindow(QMainWindow):
                 self,
                 get_text("required_file_title"),
                 get_text("required_file_message"),
+            )
+            return
+
+        # Validate the game's boot identifier before downloading tools or extracting files.
+        if not is_legend_of_mana_disc(selected_file):
+            QMessageBox.warning(
+                self,
+                get_text("wrong_game_title"),
+                get_text("wrong_game_message"),
             )
             return
 

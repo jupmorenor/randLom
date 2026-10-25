@@ -3,11 +3,51 @@
 from __future__ import annotations
 
 import random
+import re
 import struct
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+
+LEGEND_OF_MANA_DISC_IDS = (b"SLUS_010.13", b"SLPS_021.70")
+
+
+def is_legend_of_mana_disc(disc_image: str | Path) -> bool:
+    """Check whether a raw PlayStation disc image contains a supported game ID."""
+    image = Path(disc_image).expanduser().resolve()
+    if not image.is_file():
+        return False
+
+    image_files = [image]
+    if image.suffix.lower() == ".cue":
+        cue_text = image.read_text(encoding="utf-8", errors="replace")
+        image_files = []
+        for filename in re.findall(r'^\s*FILE\s+"?(.+?)"?\s+(?:BINARY|MOTOROLA|WAVE|AIFF|MP3)', cue_text, re.IGNORECASE | re.MULTILINE):
+            track = (image.parent / filename).resolve()
+            if track.is_file():
+                image_files.append(track)
+    elif image.suffix.lower() in {".ccd", ".mds"}:
+        companion_suffix = ".img" if image.suffix.lower() == ".ccd" else ".mdf"
+        companion = image.with_suffix(companion_suffix)
+        if companion.is_file():
+            image_files.append(companion)
+
+    identifiers = tuple(identifier.lower() for identifier in LEGEND_OF_MANA_DISC_IDS)
+    overlap = max(map(len, identifiers)) - 1
+    for image_file in image_files:
+        tail = b""
+        try:
+            with image_file.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    data = (tail + chunk).lower()
+                    if any(identifier in data for identifier in identifiers):
+                        return True
+                    tail = data[-overlap:]
+        except OSError:
+            continue
+    return False
 
 
 def _find_executable(project_root: Path, name: str) -> Path:
