@@ -10,8 +10,27 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from src.third_party.lom_decomp_compression.compressor import compress as _compress_overlay
+from src.third_party.lom_decomp_compression.decompress import decompress as _decompress_overlay
+from src.lang import get_text
+
 
 LEGEND_OF_MANA_DISC_IDS = (b"SLUS_010.13", b"SLPS_021.70")
+
+_FIELD_MONSTER_LEVEL_TABLE = {
+    "us": {"load_address": 0x8004FC70, "table_address": 0x800F0AE8},
+    "jp": {"load_address": 0x8004FDD8, "table_address": 0x800F05F8},
+}
+_FIELD_MONSTER_LEVEL_RANK_COUNT = 64
+_FIELD_RUN_FUNCTION = {
+    "us": {"load_address": 0x8004FC70, "function_address": 0x80091AC8},
+    "jp": {"load_address": 0x8004FDD8, "function_address": 0x80091554},
+}
+
+
+def _error_message(key: str, **values: object) -> str:
+    """Return a localized error string, formatting any supplied values."""
+    return get_text(key).format(**values)
 
 
 def is_legend_of_mana_disc(disc_image: str | Path) -> bool:
@@ -50,6 +69,140 @@ def is_legend_of_mana_disc(disc_image: str | Path) -> bool:
     return False
 
 
+def _detect_disc_region(project: Path, bin_directory: Path) -> str:
+    if (bin_directory / "SLUS_010.13").is_file():
+        return "us"
+    if (bin_directory / "SLPS_021.70").is_file():
+        return "jp"
+
+    system_config = project / "SYSTEM.CNF"
+    config_text = (
+        system_config.read_text(encoding="ascii", errors="ignore").upper()
+        if system_config.is_file()
+        else ""
+    )
+    if "SLUS_010.13" in config_text:
+        return "us"
+    if "SLPS_021.70" in config_text:
+        return "jp"
+    raise RuntimeError(_error_message("error_game_region_unknown"))
+
+
+def _read_decompressed_field(field_overlay: Path) -> bytearray:
+    original_overlay = field_overlay.read_bytes()
+    if not original_overlay or original_overlay[0] != 0x01:
+        raise ValueError(_error_message("error_field_compression_format"))
+    decompressed = bytearray(b"\x01")
+    decompressed.extend(_decompress_overlay(original_overlay[1:]))
+    return decompressed
+
+
+def _write_compressed_field(field_overlay: Path, decompressed: bytes) -> None:
+    compressed_overlay = b"\x01" + _compress_overlay(decompressed[1:])
+    if bytes(_decompress_overlay(compressed_overlay[1:])) != decompressed[1:]:
+        raise RuntimeError(_error_message("error_field_recompression_verification"))
+
+    temporary_overlay = field_overlay.with_name(field_overlay.name + ".tmp")
+    temporary_overlay.write_bytes(compressed_overlay)
+    temporary_overlay.replace(field_overlay)
+
+
+def _randomize_land_levels_data(
+    decompressed: bytearray, region: str, seed: int
+) -> int:
+    layout = _FIELD_MONSTER_LEVEL_TABLE[region]
+    table_offset = layout["table_address"] - layout["load_address"]
+    table_end = table_offset + _FIELD_MONSTER_LEVEL_RANK_COUNT
+    if table_offset < 0 or table_end > len(decompressed):
+        raise ValueError(_error_message("error_field_level_table_bounds"))
+
+    table = list(decompressed[table_offset:table_end])
+    if any(level > 99 for level in table) or table[0] != 0:
+        raise ValueError(_error_message("error_field_level_table_values"))
+
+    original_values = table[1:]
+    shuffled_values = original_values.copy()
+    rng = random.Random(seed)
+    for _ in range(512):
+        rng.shuffle(shuffled_values)
+        if shuffled_values != original_values:
+            break
+    else:
+        return 0
+
+    changed = sum(old != new for old, new in zip(original_values, shuffled_values))
+    decompressed[table_offset + 1:table_end] = bytes(shuffled_values)
+    return changed
+
+
+def _enable_autorun_data(decompressed: bytearray, region: str) -> bool:
+    layout = _FIELD_RUN_FUNCTION[region]
+    function_offset = layout["function_address"] - layout["load_address"]
+
+    # The original code masks Circle|L1, then branches to the walk path when
+    # neither is held. Autorun masks Circle alone and inverts that branch, so
+    # holding Circle selects walking and releasing it selects running.
+    original = struct.pack("<II", 0x30420044, 0x10400007)
+    patched = struct.pack("<II", 0x30420040, 0x14400007)
+    search_end = min(function_offset + 0x200, len(decompressed))
+    function_code = bytes(decompressed[function_offset:search_end])
+
+    if patched in function_code:
+        return False
+    patch_offset = function_code.find(original)
+    if patch_offset < 0 or function_code.find(original, patch_offset + 1) >= 0:
+        raise RuntimeError(_error_message("error_autorun_patch_sequence"))
+
+    absolute_patch_offset = function_offset + patch_offset
+    decompressed[absolute_patch_offset:absolute_patch_offset + len(original)] = patched
+    return True
+
+
+def modify_field_overlay(
+    project_directory: str | Path,
+    seed: int | None = None,
+    autorun_enabled: bool = False,
+) -> tuple[int, bool]:
+    """Apply selected FIELD edits using one decompression and compression pass."""
+    if seed is None and not autorun_enabled:
+        return 0, False
+
+    project = Path(project_directory).expanduser().resolve()
+    bin_directory = project / "BIN"
+    field_overlay = bin_directory / "FIELD.BIN"
+    if not field_overlay.is_file():
+        raise FileNotFoundError(
+            _error_message("error_field_overlay_missing", path=field_overlay)
+        )
+
+    region = _detect_disc_region(project, bin_directory)
+    decompressed = _read_decompressed_field(field_overlay)
+    land_levels_changed = (
+        _randomize_land_levels_data(decompressed, region, seed)
+        if seed is not None
+        else 0
+    )
+    autorun_changed = (
+        _enable_autorun_data(decompressed, region) if autorun_enabled else False
+    )
+
+    if land_levels_changed or autorun_changed:
+        _write_compressed_field(field_overlay, bytes(decompressed))
+    return land_levels_changed, autorun_changed
+
+
+def randomize_land_levels(project_directory: str | Path, seed: int) -> int:
+    """Shuffle the nonzero entries in FIELD's monster-level curve."""
+    changed, _ = modify_field_overlay(project_directory, seed=seed)
+    return changed
+
+
+def enable_autorun(project_directory: str | Path) -> bool:
+    """Patch FIELD so the controlled character runs unless Circle is held."""
+    _, changed = modify_field_overlay(project_directory, autorun_enabled=True)
+    return changed
+
+
 def _find_executable(project_root: Path, name: str) -> Path:
     for candidate in (project_root / name, project_root / "bin" / name):
         if candidate.is_file():
@@ -67,7 +220,7 @@ def _find_executable(project_root: Path, name: str) -> Path:
     if candidates:
         return candidates[0]
     raise FileNotFoundError(
-        f"No se encontró {name}. Comprueba que mkpsxiso esté instalado en la raíz del proyecto."
+        _error_message("error_required_executable_missing", name=name)
     )
 
 
@@ -87,8 +240,10 @@ def _run_command(command: list[str], working_directory: Path) -> None:
     if result.returncode != 0:
         details = (result.stderr or result.stdout).strip()
         if not details:
-            details = f"El proceso terminó con código {result.returncode}."
-        raise RuntimeError(details)
+            details = _error_message(
+                "error_process_exit_code", returncode=result.returncode
+            )
+        raise RuntimeError(_error_message("error_external_command", details=details))
 
 
 def extract_disc_image(disc_image: str | Path, project_root: str | Path) -> Path:
@@ -96,7 +251,9 @@ def extract_disc_image(disc_image: str | Path, project_root: str | Path) -> Path
     image = Path(disc_image).expanduser().resolve()
     root = Path(project_root).expanduser().resolve()
     if not image.is_file():
-        raise FileNotFoundError(f"No se encontró la imagen de disco: {image}")
+        raise FileNotFoundError(
+            _error_message("error_disc_image_missing", path=image)
+        )
 
     destination = root / "legend_of_mana"
     destination.mkdir(parents=True, exist_ok=True)
@@ -123,9 +280,13 @@ def build_disc_image(
     root = Path(project_root).expanduser().resolve()
     project_xml = source / "legend_of_mana.xml"
     if not project_xml.is_file():
-        raise FileNotFoundError(f"No se encontró el proyecto XML: {project_xml}")
+        raise FileNotFoundError(
+            _error_message("error_project_xml_missing", path=project_xml)
+        )
     if not output.is_dir():
-        raise NotADirectoryError(f"La carpeta de salida no existe: {output}")
+        raise NotADirectoryError(
+            _error_message("error_output_directory_missing", path=output)
+        )
 
     base_name = "legend_of_mana"
     output_image = output / f"{base_name}.bin"
@@ -134,8 +295,7 @@ def build_disc_image(
     if existing_files:
         paths = ", ".join(str(file) for file in existing_files)
         raise FileExistsError(
-            f"Ya existen archivos de salida en la carpeta seleccionada: {paths}. "
-            "Elige otra carpeta para evitar sobrescribirlos."
+            _error_message("error_output_files_exist", paths=paths)
         )
 
     executable = _find_executable(
@@ -200,7 +360,7 @@ def _event_operand_end(
             return position, None, 0
         if kind in (8, 9, 10):
             return position, {8: 0, 9: 1, 10: 255}[kind], 0
-        raise ValueError(f"Tipo nibble desconocido: {kind}")
+        raise ValueError(_error_message("error_unknown_nibble_type", kind=kind))
 
     kind &= 0x3
     if kind == 0:
@@ -213,7 +373,9 @@ def _event_operand_end(
     if kind == 3:
         end = position + 4
         return end, struct.unpack_from("<i", data, position)[0] if end <= len(data) else None, 4
-    raise ValueError(f"Tipo de operando de evento desconocido: {kind}")
+    raise ValueError(
+        _error_message("error_unknown_event_operand_type", kind=kind)
+    )
 
 
 def _decode_event_instruction(
@@ -221,7 +383,7 @@ def _decode_event_instruction(
 ) -> tuple[int, list[tuple[int, int, int]], list[int]]:
     """Decode instruction length, scene-id operand offsets and static successors."""
     if position >= len(section):
-        raise ValueError("instrucción fuera de la sección de eventos")
+        raise ValueError(_error_message("error_event_instruction_out_of_range"))
     start = position
     opcode = section[position]
     position += 1
@@ -232,7 +394,7 @@ def _decode_event_instruction(
         nonlocal position
         size = struct.calcsize("<" + fmt)
         if position + size > len(section):
-            raise ValueError("instrucción truncada en la sección de eventos")
+            raise ValueError(_error_message("error_event_instruction_truncated"))
         value = struct.unpack_from("<" + fmt, section, position)[0]
         position += size
         return value
@@ -313,7 +475,9 @@ def _decode_event_instruction(
     elif opcode == 0x0E:
         read("H")
     else:
-        raise ValueError(f"opcode de evento no reconocido 0x{opcode:02X}")
+        raise ValueError(
+            _error_message("error_unknown_event_opcode", opcode=f"0x{opcode:02X}")
+        )
 
     if opcode in (0x02, 0x04, 0x05):
         successors.append(position)
@@ -324,11 +488,13 @@ def _scene_paths_from_manifest(project_directory: Path) -> list[Path]:
     """Use mkpsxiso's preserved directory order as the FIELD scene resource order."""
     manifest = project_directory / "legend_of_mana.xml"
     if not manifest.is_file():
-        raise FileNotFoundError(f"No se encontró el manifiesto del disco: {manifest}")
+        raise FileNotFoundError(
+            _error_message("error_disc_manifest_missing", path=manifest)
+        )
     root = ET.parse(manifest).getroot()
     tree = root.find(".//directory_tree")
     if tree is None:
-        raise ValueError("El manifiesto no contiene directory_tree.")
+        raise ValueError(_error_message("error_manifest_directory_tree_missing"))
     scenes: list[Path] = []
 
     def collect_group(element: ET.Element, parts: tuple[str, ...]) -> None:
@@ -356,6 +522,115 @@ def _scene_paths_from_manifest(project_directory: Path) -> list[Path]:
 
     find_ana(tree)
     return scenes
+
+def randomize_artifact_event_rewards(
+    project_directory: str | Path, seed: int
+) -> int:
+    """Permute literal artifact unlocks in reachable scene event scripts.
+
+    Artifact rewards are FIELD's ``make_land_available`` command (opcode
+    0x44, subcommand 0x0F), not inventory item IDs. Only direct literal land
+    indices in the valid 0..63 range are included; variable-driven and other
+    dynamic operands are left unchanged. Reward values are shuffled without
+    replacement, preserving the original multiset of unlocked artifacts.
+    """
+    project = Path(project_directory).expanduser().resolve()
+    ana = project / "ANA"
+    records: list[tuple[Path, int, int, int]] = []
+
+    for scene_path in _scene_paths_from_manifest(project):
+        if not scene_path.is_file() or scene_path.parent.parent.resolve() != ana:
+            continue
+        data = scene_path.read_bytes()
+        if len(data) < 40:
+            continue
+        offsets = struct.unpack_from("<10I", data)
+        if offsets[0] != 40 or tuple(sorted(offsets)) != offsets or any(
+            offset > len(data) or offset % 4 for offset in offsets
+        ):
+            continue
+
+        section_start, section_end = offsets[1], offsets[2]
+        section = data[section_start:section_end]
+        if len(section) < 2:
+            continue
+        table_size = struct.unpack_from("<H", section)[0]
+        if table_size < 2 or table_size % 2 or table_size > len(section):
+            continue
+        script_offsets = struct.unpack_from(f"<{table_size // 2}H", section)
+        pending = [offset for offset in script_offsets if table_size <= offset < len(section)]
+        visited: set[int] = set()
+
+        while pending:
+            position = pending.pop()
+            if position in visited or position < table_size or position >= len(section):
+                continue
+            visited.add(position)
+            try:
+                instruction_size, _, successors = _decode_event_instruction(
+                    section, position
+                )
+            except (ValueError, struct.error):
+                continue
+            if instruction_size <= 0:
+                continue
+
+            if section[position] == 0x44 and position + 1 < len(section):
+                descriptor = section[position + 1]
+                operand_position = position + 2
+                try:
+                    operand_position, subcommand, _ = _event_operand_end(
+                        section, operand_position, descriptor & 0x0F, nibble=True
+                    )
+                    argument_offset = operand_position
+                    _, artifact_id, argument_width = _event_operand_end(
+                        section, operand_position, descriptor >> 4, nibble=True
+                    )
+                except (ValueError, struct.error, IndexError):
+                    subcommand = None
+                    artifact_id = None
+                    argument_width = 0
+                if (
+                    subcommand == 0x0F
+                    and artifact_id is not None
+                    and 0 <= artifact_id < 64
+                    and argument_width in (1, 2)
+                ):
+                    records.append(
+                        (scene_path, section_start + argument_offset, argument_width, artifact_id)
+                    )
+
+            pending.extend(
+                target for target in successors if 0 <= target < len(section)
+            )
+
+    if len(records) < 2:
+        return 0
+
+    original_values = [record[3] for record in records]
+    shuffled_values = original_values.copy()
+    rng = random.Random(seed)
+    for _ in range(512):
+        rng.shuffle(shuffled_values)
+        if shuffled_values != original_values:
+            break
+    else:
+        return 0
+
+    changed_by_path: dict[Path, bytearray] = {}
+    changed = 0
+    for (scene_path, offset, width, old_value), new_value in zip(records, shuffled_values):
+        if old_value == new_value:
+            continue
+        scene_data = changed_by_path.setdefault(
+            scene_path, bytearray(scene_path.read_bytes())
+        )
+        struct.pack_into("<B" if width == 1 else "<H", scene_data, offset, new_value)
+        changed += 1
+
+    for scene_path, scene_data in changed_by_path.items():
+        scene_path.write_bytes(scene_data)
+    return changed
 
 
 def _connected_components(
@@ -406,7 +681,7 @@ def randomize_local_scene_transitions(
         if path.is_file() and path.parent.parent.resolve() == ana.resolve()
     }
     if not scene_by_id:
-        raise RuntimeError("El manifiesto no enumera escenas FIELD de ANA.")
+        raise RuntimeError(_error_message("error_manifest_field_scenes_missing"))
 
     def is_scene_group(path: Path) -> bool:
         group = path.parent.name.upper()
@@ -467,7 +742,7 @@ def randomize_local_scene_transitions(
             pending.extend(target for target in successors if 0 <= target < len(section))
 
     if not records:
-        raise RuntimeError("No se encontraron transiciones internas compatibles para aleatorizar.")
+        raise RuntimeError(_error_message("error_no_local_scene_transitions"))
 
     adjacency_by_location: dict[str, dict[int, set[int]]] = {}
     for index, (_, _, old_destination, source_id, location, operand_width) in enumerate(records):
@@ -583,7 +858,7 @@ def randomize_global_scene_transitions_with_return(
              or path.parent.name.upper() == "MAPINFO")
     }
     if not scene_by_id:
-        raise RuntimeError("El manifiesto no enumera escenas FIELD de ANA.")
+        raise RuntimeError(_error_message("error_manifest_field_scenes_missing"))
     non_land_prefixes = {"BTL", "DMY", "END", "INIT", "MID"}
 
     # Each record is one 0x85 instruction and its four operands: scene, object,
@@ -683,9 +958,7 @@ def randomize_global_scene_transitions_with_return(
             (source_id, target_id, forward_indexes[0], reverse_indexes[0])
         )
     if len(reciprocal_pairs) < 2:
-        raise RuntimeError(
-            "No se encontraron suficientes pares de puertas recíprocas y no ambiguas."
-        )
+        raise RuntimeError(_error_message("error_not_enough_reciprocal_door_pairs"))
 
     def fields_compatible(first: int, second: int) -> bool:
         first_fields = records[first][2]
@@ -797,9 +1070,7 @@ def randomize_global_scene_transitions_with_return(
         new_payload_by_record.update(assignments)
 
     if not new_payload_by_record:
-        raise RuntimeError(
-            "No se encontraron pares de puertas compatibles para enlazar entre tierras."
-        )
+        raise RuntimeError(_error_message("error_no_compatible_return_door_pairs"))
 
     changed_by_path: dict[Path, bytearray] = {}
     changed_destinations = 0
@@ -845,7 +1116,7 @@ def randomize_extreme_global_scene_transitions(
              or path.parent.name.upper() == "MAPINFO")
     }
     if not scene_by_id:
-        raise RuntimeError("El manifiesto no enumera escenas FIELD de ANA.")
+        raise RuntimeError(_error_message("error_manifest_field_scenes_missing"))
 
     excluded_prefixes = {"BTL", "DMY", "MID"}
     prefix_by_scene = {
@@ -946,7 +1217,7 @@ def randomize_extreme_global_scene_transitions(
             pending.extend(target for target in successors if 0 <= target < len(section))
 
     if not records:
-        raise RuntimeError("No se encontraron transiciones globales compatibles.")
+        raise RuntimeError(_error_message("error_no_global_scene_transitions"))
 
     rng = random.Random(seed)
     payload_for_record: dict[int, int] = {}
@@ -987,10 +1258,7 @@ def randomize_extreme_global_scene_transitions(
                 mutable[offset:offset + width] = raw_value
 
     if not changed:
-        raise RuntimeError(
-            "La semilla no produjo cambios en las transiciones compatibles. "
-            "Prueba con otra semilla."
-        )
+        raise RuntimeError(_error_message("error_seed_no_scene_transition_changes"))
     for path, data in changed_by_path.items():
         path.write_bytes(data)
     return changed
@@ -1046,7 +1314,7 @@ def _find_scene_chests(data: bytes) -> list[tuple[int, int]]:
         item_id = scripts[4]
         if item_id >= 0xFF:
             raise ValueError(
-                f"El cofre de índice {index} contiene el item_id reservado 0xFF."
+                _error_message("error_chest_reserved_item_id", index=index)
             )
         chests.append((record_offset + 24, item_id))
     return chests
@@ -1061,7 +1329,7 @@ def randomize_chests(project_directory: str | Path, seed: int) -> int:
     """
     ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
-        raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
+        raise FileNotFoundError(_error_message("error_ana_folder_missing", path=ana))
 
     scenes = sorted(
         path
@@ -1080,7 +1348,7 @@ def randomize_chests(project_directory: str | Path, seed: int) -> int:
             original_ids.extend(item_id for _, item_id in chests)
 
     if not original_ids:
-        raise RuntimeError("No se encontraron cofres compatibles para aleatorizar.")
+        raise RuntimeError(_error_message("error_no_compatible_chests"))
 
     randomized_ids = original_ids.copy()
     random.Random(seed).shuffle(randomized_ids)
@@ -1350,7 +1618,7 @@ def randomize_equipment_drop_materials(
     """Assign random primary materials to weapons/armor in drops."""
     ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
-        raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
+        raise FileNotFoundError(_error_message("error_ana_folder_missing", path=ana))
 
     rng = random.Random(seed)
     changed: dict[Path, bytearray] = {}
@@ -1373,9 +1641,7 @@ def randomize_equipment_drop_materials(
             changed[path] = mutable
 
     if not count:
-        raise RuntimeError(
-            "No se encontraron botines de armas o armaduras compatibles para aleatorizar."
-        )
+        raise RuntimeError(_error_message("error_no_equipment_drops"))
     for path, data in changed.items():
         path.write_bytes(data)
     return count
@@ -1390,7 +1656,7 @@ def _randomize_item_destinations(
     """Assign IDs from the same catalog to chests and/or drops with replacement."""
     ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
-        raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
+        raise FileNotFoundError(_error_message("error_ana_folder_missing", path=ana))
     scenes = sorted(
         path for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG")
         for path in ana.glob(pattern) if path.is_file()
@@ -1413,12 +1679,10 @@ def _randomize_item_destinations(
     drop_count = len(destinations) - chest_count
     if not destinations:
         if include_chests and include_item_drops:
-            raise RuntimeError(
-                "No se encontraron cofres ni botines de objetos compatibles."
-            )
+            raise RuntimeError(_error_message("error_no_chests_or_item_drops"))
         if include_chests:
-            raise RuntimeError("No se encontraron cofres compatibles para aleatorizar.")
-        raise RuntimeError("No se encontraron botines de objetos compatibles.")
+            raise RuntimeError(_error_message("error_no_compatible_chests"))
+        raise RuntimeError(_error_message("error_no_compatible_item_drops"))
 
     item_kinds = tuple(range(0xFF))
     rng = random.Random(seed)
@@ -1523,7 +1787,7 @@ def randomize_normal_shop_items(
     """Permute normal items between shop slots while preserving their prices."""
     ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
-        raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
+        raise FileNotFoundError(_error_message("error_ana_folder_missing", path=ana))
 
     destinations: list[tuple[Path, int, int]] = []
     for pattern in ("INFO_*/*.IMG", "MAPINFO/*.IMG"):
@@ -1547,7 +1811,7 @@ def randomize_normal_shop_items(
                         destinations.append((path, offset, word))
 
     if not destinations:
-        raise RuntimeError("No se encontraron slots de objetos normales en tiendas.")
+        raise RuntimeError(_error_message("error_no_normal_shop_slots"))
 
     items = [word & 0xFF for _, _, word in destinations]
     random.Random(seed).shuffle(items)
@@ -1589,11 +1853,17 @@ def _equipment_tables_from_scenes(ana: Path) -> tuple[bytes, bytes]:
     for resource_id, tables in found_tables.items():
         if not tables:
             raise RuntimeError(
-                f"No se encontró la tabla de generación FIELD 0x{resource_id:04X}."
+                _error_message(
+                    "error_field_generation_table_missing",
+                    resource_id=f"0x{resource_id:04X}",
+                )
             )
         if len(tables) > 1:
             raise RuntimeError(
-                f"Se encontraron versiones incompatibles de la tabla FIELD 0x{resource_id:04X}."
+                _error_message(
+                    "error_field_generation_table_conflict",
+                    resource_id=f"0x{resource_id:04X}",
+                )
             )
     return next(iter(found_tables[0x0004])), next(iter(found_tables[0x000F]))
 
@@ -1661,7 +1931,7 @@ def randomize_equipment_shop_materials(
     """Change materials for weapons, armor, and instruments sold in shops."""
     ana = Path(project_directory).expanduser().resolve() / "ANA"
     if not ana.is_dir():
-        raise FileNotFoundError(f"No se encontró la carpeta ANA: {ana}")
+        raise FileNotFoundError(_error_message("error_ana_folder_missing", path=ana))
 
     item_table, instrument_table = _equipment_tables_from_scenes(ana)
     rng = random.Random(seed)
@@ -1750,9 +2020,7 @@ def randomize_equipment_shop_materials(
 
     count = sum(len(offsets) for offsets in material_offsets.values())
     if not count:
-        raise RuntimeError(
-            "No se encontraron objetos de equipamento compatibles en tiendas."
-        )
+        raise RuntimeError(_error_message("error_no_equipment_shop_items"))
     for path, data in changed_files.items():
         path.write_bytes(data)
     return count
