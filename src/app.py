@@ -37,6 +37,10 @@ from src.core import (
     randomize_extreme_global_scene_transitions,
     randomize_equipment_shop_materials,
     randomize_normal_shop_items,
+    randomize_artifact_event_rewards,
+    randomize_land_levels,
+    enable_autorun,
+    modify_field_overlay,
     build_disc_image,
     extract_disc_image,
     is_legend_of_mana_disc,
@@ -57,7 +61,7 @@ def application_root() -> Path:
 
 
 class _ExtractionWorker(QThread):
-    succeeded = pyqtSignal(str, int, int, int, int, int, int)
+    succeeded = pyqtSignal(str, int, int, int, int, int, int, int, int, bool)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -69,6 +73,9 @@ class _ExtractionWorker(QThread):
         randomize_equipment_drops_enabled: bool,
         randomize_normal_shop_items_enabled: bool,
         randomize_equipment_shop_items_enabled: bool,
+        randomize_artifacts_enabled: bool,
+        randomize_land_levels_enabled: bool,
+        autorun_enabled: bool,
         scene_transition_mode: str | None,
         parent: QWidget | None = None,
     ) -> None:
@@ -86,6 +93,9 @@ class _ExtractionWorker(QThread):
         self.randomize_equipment_shop_items_enabled = (
             randomize_equipment_shop_items_enabled
         )
+        self.randomize_artifacts_enabled = randomize_artifacts_enabled
+        self.randomize_land_levels_enabled = randomize_land_levels_enabled
+        self.autorun_enabled = autorun_enabled
         self.scene_transition_mode = scene_transition_mode
 
     def run(self) -> None:
@@ -99,6 +109,9 @@ class _ExtractionWorker(QThread):
             normal_shop_slots_changed = 0
             equipment_shop_items_changed = 0
             scene_transitions_changed = 0
+            artifacts_changed = 0
+            land_level_entries_changed = 0
+            autorun_changed = False
             if self.randomize_chests_enabled and self.randomize_item_drops_enabled:
                 chests_changed, item_drops_changed = randomize_chests_and_item_drops(
                     extracted_directory, self.seed
@@ -139,10 +152,32 @@ class _ExtractionWorker(QThread):
                         extracted_directory, self.seed
                     )
                 )
+            if self.randomize_artifacts_enabled:
+                artifacts_changed = randomize_artifact_event_rewards(
+                    extracted_directory, self.seed
+                )
+            if self.randomize_land_levels_enabled and self.autorun_enabled:
+                (
+                    land_level_entries_changed,
+                    autorun_changed,
+                ) = modify_field_overlay(
+                    extracted_directory,
+                    seed=self.seed,
+                    autorun_enabled=True,
+                )
+            elif self.randomize_land_levels_enabled:
+                land_level_entries_changed = randomize_land_levels(
+                    extracted_directory, self.seed
+                )
+            elif self.autorun_enabled:
+                autorun_changed = enable_autorun(extracted_directory)
             self.succeeded.emit(
                 str(extracted_directory), chests_changed, item_drops_changed,
                 equipment_drops_changed, normal_shop_slots_changed,
                 equipment_shop_items_changed, scene_transitions_changed,
+                artifacts_changed,
+                land_level_entries_changed,
+                autorun_changed,
             )
         except Exception as error:
             self.failed.emit(str(error))
@@ -229,6 +264,8 @@ class MainWindow(QMainWindow):
         seed_layout.addWidget(self.seed_label)
         seed_layout.addStretch()
 
+        self.autorun_checkbox = QCheckBox(get_text("autorun"))
+
         self.randomize_objects_checkbox = QCheckBox(get_text("randomize_objects"))
         self.randomize_objects_checkbox.setChecked(False)
 
@@ -263,6 +300,32 @@ class MainWindow(QMainWindow):
             self.shop_randomization_group.setVisible
         )
 
+        self.artifacts_and_lands_checkbox = QCheckBox(
+            get_text("artifacts_and_lands")
+        )
+        self.artifacts_and_lands_group = QGroupBox(
+            get_text("artifacts_and_lands_options")
+        )
+        artifacts_and_lands_layout = QVBoxLayout(
+            self.artifacts_and_lands_group
+        )
+        self.randomize_artifacts_checkbox = QCheckBox(
+            get_text("randomize_artifacts")
+        )
+        self.randomize_land_levels_checkbox = QCheckBox(
+            get_text("randomize_land_levels")
+        )
+        self.randomize_essence_levels_checkbox = QCheckBox(
+            get_text("randomize_essence_levels")
+        )
+        artifacts_and_lands_layout.addWidget(self.randomize_artifacts_checkbox)
+        artifacts_and_lands_layout.addWidget(self.randomize_land_levels_checkbox)
+        artifacts_and_lands_layout.addWidget(self.randomize_essence_levels_checkbox)
+        self.artifacts_and_lands_group.setVisible(False)
+        self.artifacts_and_lands_checkbox.toggled.connect(
+            self.artifacts_and_lands_group.setVisible
+        )
+
         self.scene_change_checkbox = QCheckBox(get_text("scene_changes"))
         self.scene_change_group = QGroupBox(get_text("scene_change_mode"))
         scene_change_layout = QVBoxLayout(self.scene_change_group)
@@ -294,10 +357,13 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addLayout(file_layout)
         layout.addLayout(seed_layout)
+        layout.addWidget(self.autorun_checkbox)
         layout.addWidget(self.randomize_objects_checkbox)
         layout.addWidget(self.object_randomization_group)
         layout.addWidget(self.randomize_shops_checkbox)
         layout.addWidget(self.shop_randomization_group)
+        layout.addWidget(self.artifacts_and_lands_checkbox)
+        layout.addWidget(self.artifacts_and_lands_group)
         layout.addWidget(self.scene_change_checkbox)
         layout.addWidget(self.scene_change_group)
         layout.addWidget(self.generate_button)
@@ -329,6 +395,7 @@ class MainWindow(QMainWindow):
             if self.seed is None
             else get_text("seed_used").format(seed=self.seed)
         )
+        self.autorun_checkbox.setText(get_text("autorun"))
         self.randomize_objects_checkbox.setText(get_text("randomize_objects"))
         self.object_randomization_group.setTitle(get_text("object_types"))
         self.randomize_chests_checkbox.setText(get_text("chests"))
@@ -338,6 +405,15 @@ class MainWindow(QMainWindow):
         self.shop_randomization_group.setTitle(get_text("shop_types"))
         self.randomize_normal_shops_checkbox.setText(get_text("normal_shops"))
         self.randomize_equipment_shops_checkbox.setText(get_text("equipment_shops"))
+        self.artifacts_and_lands_checkbox.setText(get_text("artifacts_and_lands"))
+        self.artifacts_and_lands_group.setTitle(
+            get_text("artifacts_and_lands_options")
+        )
+        self.randomize_artifacts_checkbox.setText(get_text("randomize_artifacts"))
+        self.randomize_land_levels_checkbox.setText(get_text("randomize_land_levels"))
+        self.randomize_essence_levels_checkbox.setText(
+            get_text("randomize_essence_levels")
+        )
         self.scene_change_checkbox.setText(get_text("scene_changes"))
         self.scene_change_group.setTitle(get_text("scene_change_mode"))
         self.scene_change_local_radio.setText(get_text("scene_local"))
@@ -453,6 +529,11 @@ class MainWindow(QMainWindow):
             and self.randomize_normal_shops_checkbox.isChecked(),
             self.randomize_shops_checkbox.isChecked()
             and self.randomize_equipment_shops_checkbox.isChecked(),
+            self.artifacts_and_lands_checkbox.isChecked()
+            and self.randomize_artifacts_checkbox.isChecked(),
+            self.artifacts_and_lands_checkbox.isChecked()
+            and self.randomize_land_levels_checkbox.isChecked(),
+            self.autorun_checkbox.isChecked(),
             self._scene_transition_mode_requested,
             self,
         )
@@ -469,6 +550,9 @@ class MainWindow(QMainWindow):
         normal_shop_slots_changed: int,
         equipment_shop_items_changed: int,
         scene_transitions_changed: int,
+        artifacts_changed: int,
+        land_level_entries_changed: int,
+        autorun_changed: bool,
     ) -> None:
         self._chests_changed = chests_changed
         self._item_drops_changed = item_drops_changed
@@ -476,6 +560,9 @@ class MainWindow(QMainWindow):
         self._normal_shop_slots_changed = normal_shop_slots_changed
         self._equipment_shop_items_changed = equipment_shop_items_changed
         self._scene_transitions_changed = scene_transitions_changed
+        self._artifacts_changed = artifacts_changed
+        self._land_level_entries_changed = land_level_entries_changed
+        self._autorun_changed = autorun_changed
         # 6. Ask for the output directory immediately before building the image.
         output_directory = QFileDialog.getExistingDirectory(
             self,
@@ -550,6 +637,16 @@ class MainWindow(QMainWindow):
             ).format(
                 count=self._equipment_shop_items_changed
             )
+        if getattr(self, "_artifacts_changed", 0):
+            object_summary += "\n" + get_text("artifacts_changed").format(
+                count=self._artifacts_changed
+            )
+        if getattr(self, "_land_level_entries_changed", 0):
+            object_summary += "\n" + get_text("land_level_entries_changed").format(
+                count=self._land_level_entries_changed
+            )
+        if getattr(self, "_autorun_changed", False):
+            object_summary += "\n" + get_text("autorun_enabled")
         if getattr(self, "_scene_transition_mode_requested", None):
             mode_label = {
                 "local": get_text("scene_local"),

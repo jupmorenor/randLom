@@ -6,11 +6,19 @@ RandLom is a desktop application for modifying a **Legend of Mana** PlayStation 
 
 The interface is available in English and Spanish. Use the **Language** menu to switch languages; the change applies immediately.
 
+## Development note
+
+RandLom was developed with assistance from artificial intelligence tools. The project author remains responsible for the code, design decisions, and releases.
+
 ## Features
 
 ### Seed
 
 Choose **Add seed** to enter a numeric seed. If you leave it unset, RandLom creates a random seed when generation starts and displays the value used. Keep that value to reproduce a run with the same selections.
+
+### Autorun
+
+Enable **Autorun** to make the controlled character run by default. Hold Circle to walk. This patches the FIELD overlay; when disabled, the game's original run-button behavior is preserved.
 
 ### Randomize items
 
@@ -28,6 +36,20 @@ Enable **Item shops** to reveal:
 
 - **Normal item shops**: shuffles the items already present in normal shop slots, preserving the existing slots and their prices.
 - **Equipment shops**: changes the materials used by weapons, armor, and instruments sold in equipment shops, and recalculates their material-dependent derived values.
+
+### Randomize artifacts
+
+**Randomize artifacts** permutes the artifact IDs granted by reachable event-script commands that make an artifact available. It only shuffles existing artifact rewards: it does not add rewards to events that give items or have no artifact reward, and it preserves the original reward pool without replacement.
+
+Artifact availability can be part of story progression. Some events may check for a specific artifact or depend on its placement, so this option can make progression difficult or block an event. The randomizer does not adjust those dependencies. Back up your saves and preferably start a new game when using this option; already-unlocked artifacts in an existing save are not changed retroactively.
+
+### Artifacts and lands
+
+Enable **Artifacts and lands** to reveal additional world-map options:
+
+- **Randomize artifacts**: see the progression warning above.
+- **Land levels**: permutes the 63 nonzero rank entries in FIELD's distance-to-monster-level table, keeping rank zero fixed. It preserves the table's existing level values and their frequency, while changing which levels correspond to each rank. The game's difficulty setting and event-specific level limits still apply.
+- **Essence levels**: reserved for a future feature.
 
 ### Scene transitions
 
@@ -47,6 +69,7 @@ Before extraction, RandLom checks for the North American game ID `SLUS_010.13` o
 2. Select a Legend of Mana PlayStation 1 disc image. The file picker accepts `.cue`, `.bin`, `.iso`, `.img`, `.ccd`, `.chd`, `.mdf`, `.mds`, `.pbp`, `.toc`, and `.cbn` files. For multi-track discs, select the CUE sheet so the tracks are available to the extractor.
 3. Optionally enter a numeric seed. If omitted, RandLom generates one and displays it.
 4. Enable the randomization sections and individual options you want. Select at most one scene-transition mode.
+   If you enable **Randomize artifacts**, be aware that changing event rewards can interfere with story progression; see the warning above.
 5. Click **Generate**. RandLom validates the game ID before proceeding.
 6. If `mkpsxiso` is not installed beside the application, approve its download. RandLom downloads the latest GitHub release archive matching the current operating system and, when available, architecture. This download requires an internet connection.
 7. If you did not enter a seed, RandLom creates one and displays it. Review the seed in the generation confirmation dialog and accept to continue.

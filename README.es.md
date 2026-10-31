@@ -6,11 +6,19 @@ RandLom es una aplicación de escritorio para modificar imágenes de disco de **
 
 La interfaz está disponible en inglés y español. Usa el menú **Idioma** para cambiar el idioma; el cambio se aplica inmediatamente.
 
+## Nota sobre el desarrollo
+
+RandLom fue desarrollado con la asistencia de herramientas de inteligencia artificial. El autor del proyecto mantiene la responsabilidad sobre el código, las decisiones de diseño y las versiones publicadas.
+
 ## Características
 
 ### Semilla
 
 Pulsa **Agregar semilla** para introducir una semilla numérica. Si no indicas una, RandLom genera una al iniciar el proceso y muestra el valor usado. Conserva ese valor para reproducir una ejecución con las mismas opciones.
+
+### Correr automáticamente
+
+Activa **Correr automáticamente** para que el personaje controlado corra por defecto. Mantén presionado Círculo para caminar. Esta opción modifica el overlay FIELD; si está desactivada, se conserva el comportamiento original del juego.
 
 ### Aleatorizar objetos
 
@@ -28,6 +36,20 @@ Activa **Tiendas de objetos** para mostrar:
 
 - **Tiendas de objetos normales**: intercambia los objetos que ya ocupan los espacios de las tiendas normales, conservando los espacios y sus precios.
 - **Tiendas de equipamento**: cambia los materiales de las armas, armaduras e instrumentos vendidos en las tiendas de equipamento y recalcula los valores derivados que dependen del material.
+
+### Aleatorizar artefactos
+
+**Aleatorizar artefactos** permuta los identificadores de artefactos concedidos por comandos alcanzables de los scripts de eventos que habilitan un artefacto. Solo intercambia recompensas de artefactos existentes: no agrega recompensas a eventos que dan objetos o no tienen recompensa de artefacto, y conserva el conjunto original sin reemplazo.
+
+La disponibilidad de artefactos puede formar parte de la progresión de la historia. Algunos eventos podrían comprobar un artefacto específico o depender de su colocación, por lo que esta opción puede dificultar el avance o bloquear un evento. El aleatorizador no ajusta esas dependencias. Haz una copia de seguridad de tus partidas y, de preferencia, comienza una partida nueva al activar esta opción; los artefactos ya desbloqueados en una partida existente no se cambian retroactivamente.
+
+### Artefactos y tierras
+
+Activa **Artefactos y Tierras** para mostrar opciones adicionales del mapa del mundo:
+
+- **Aleatorizar artefactos**: consulta la advertencia de progresión anterior.
+- **Niveles de tierra**: permuta las 63 entradas de rango distintas de cero de la tabla de FIELD que relaciona la distancia con el nivel de los monstruos. Mantiene fijo el rango cero y conserva los valores existentes y su frecuencia, pero cambia qué nivel corresponde a cada rango. La dificultad del juego y los límites de nivel específicos de cada evento siguen aplicándose.
+- **Niveles de esencia**: reservado para una implementación futura.
 
 ### Cambio entre escenas
 
@@ -47,6 +69,7 @@ Antes de extraer, RandLom busca el identificador norteamericano `SLUS_010.13` o 
 2. Selecciona una imagen de disco de Legend of Mana para PlayStation 1. El selector acepta `.cue`, `.bin`, `.iso`, `.img`, `.ccd`, `.chd`, `.mdf`, `.mds`, `.pbp`, `.toc` y `.cbn`. Para discos con varias pistas, selecciona el archivo CUE para que el extractor pueda acceder a todas.
 3. Si quieres, introduce una semilla numérica. Si la dejas vacía, RandLom generará y mostrará una automáticamente.
 4. Activa las secciones y opciones de aleatorización que quieras. En cambio entre escenas solo puedes seleccionar un modo.
+   Si activas **Aleatorizar artefactos**, ten en cuenta que cambiar las recompensas de eventos puede afectar la progresión de la historia; consulta la advertencia anterior.
 5. Pulsa **Generar**. RandLom valida el identificador del juego antes de continuar.
 6. Si `mkpsxiso` no está instalado junto a la aplicación, acepta su descarga. RandLom descarga el archivo comprimido más reciente de GitHub correspondiente al sistema operativo y, cuando está disponible, a la arquitectura. Se requiere conexión a internet.
 7. Si no introdujiste una semilla, RandLom genera una y la muestra. Revisa el valor en el cuadro de confirmación y acepta para continuar.
