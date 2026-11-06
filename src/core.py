@@ -28,7 +28,13 @@ _FIELD_RUN_FUNCTION = {
 }
 _CD_RESOURCE_ENTRY_SIZE = 8
 _CD_RESOURCE_FIELD_BIN_INDEX = 2
+_CD_RESOURCE_WMAP_BIN_INDEX = 3
 _CD_DATA_SECTOR_SIZE = 2048
+_WMAP_DATA_START = {"us": 0x74919, "jp": 0x74885}
+_WMAP_LAND_ATTRIBUTES_OFFSET = 0xB844
+_WMAP_LAND_ATTRIBUTE_COUNT = 64
+_WMAP_LAND_ATTRIBUTE_SIZE = 12
+_WMAP_SPIRIT_COUNT = 8
 
 
 def _error_message(key: str, **values: object) -> str:
@@ -138,6 +144,111 @@ def _updated_field_resource_table(
 
     struct.pack_into("<i", table, size_offset, compressed_size)
     return table_path, bytes(table)
+
+
+def _updated_wmap_resource_table(
+    wmap_overlay: Path, compressed_size: int
+) -> tuple[Path, bytes] | None:
+    """Update WMAP's byte length in the disc resource table when needed."""
+    original_size = wmap_overlay.stat().st_size
+    if compressed_size == original_size:
+        return None
+
+    table_path = wmap_overlay.parent.parent / "SKCDPOSE.DAT"
+    if not table_path.is_file():
+        raise FileNotFoundError(
+            _error_message("error_wmap_resource_table_missing", path=table_path)
+        )
+
+    table = bytearray(table_path.read_bytes())
+    size_offset = _CD_RESOURCE_WMAP_BIN_INDEX * _CD_RESOURCE_ENTRY_SIZE + 4
+    if size_offset + 4 > len(table):
+        raise ValueError(_error_message("error_wmap_resource_table_invalid"))
+
+    recorded_size = struct.unpack_from("<i", table, size_offset)[0]
+    if recorded_size == compressed_size:
+        return None
+    if recorded_size != original_size:
+        raise ValueError(_error_message("error_wmap_resource_table_mismatch"))
+
+    old_sector_count = (recorded_size + _CD_DATA_SECTOR_SIZE - 1) // _CD_DATA_SECTOR_SIZE
+    new_sector_count = (compressed_size + _CD_DATA_SECTOR_SIZE - 1) // _CD_DATA_SECTOR_SIZE
+    if old_sector_count != new_sector_count:
+        raise ValueError(_error_message("error_wmap_resource_sector_change"))
+
+    struct.pack_into("<i", table, size_offset, compressed_size)
+    return table_path, bytes(table)
+
+
+def _write_compressed_wmap(wmap_overlay: Path, decompressed: bytes) -> None:
+    compressed_overlay = b"\x01" + _compress_overlay(decompressed[1:])
+    if bytes(_decompress_overlay(compressed_overlay[1:])) != decompressed[1:]:
+        raise RuntimeError(_error_message("error_wmap_recompression_verification"))
+
+    resource_table_update = _updated_wmap_resource_table(
+        wmap_overlay, len(compressed_overlay)
+    )
+    temporary_overlay = wmap_overlay.with_name(wmap_overlay.name + ".tmp")
+    temporary_overlay.write_bytes(compressed_overlay)
+    temporary_overlay.replace(wmap_overlay)
+    if resource_table_update is not None:
+        table_path, updated_table = resource_table_update
+        temporary_table = table_path.with_name(table_path.name + ".tmp")
+        temporary_table.write_bytes(updated_table)
+        temporary_table.replace(table_path)
+
+
+def randomize_essence_levels(project_directory: str | Path, seed: int) -> int:
+    """Shuffle each spirit's initial strength across the artifact table."""
+    project = Path(project_directory).expanduser().resolve()
+    bin_directory = project / "BIN"
+    wmap_overlay = bin_directory / "WMAP.BIN"
+    if not wmap_overlay.is_file():
+        raise FileNotFoundError(
+            _error_message("error_wmap_overlay_missing", path=wmap_overlay)
+        )
+
+    region = _detect_disc_region(project, bin_directory)
+    original_overlay = wmap_overlay.read_bytes()
+    if not original_overlay or original_overlay[0] != 0x01:
+        raise ValueError(_error_message("error_wmap_compression_format"))
+    decompressed = bytearray(b"\x01")
+    decompressed.extend(_decompress_overlay(original_overlay[1:]))
+
+    # WMAP's configured file offsets include the leading compression marker,
+    # while the decompressor returns only the payload bytes.
+    table_offset = _WMAP_DATA_START[region] + _WMAP_LAND_ATTRIBUTES_OFFSET
+    table_end = table_offset + _WMAP_LAND_ATTRIBUTE_COUNT * _WMAP_LAND_ATTRIBUTE_SIZE
+    if table_offset < 1 or table_end > len(decompressed):
+        raise ValueError(_error_message("error_wmap_essence_table_bounds"))
+
+    rows = [
+        table_offset + index * _WMAP_LAND_ATTRIBUTE_SIZE
+        for index in range(_WMAP_LAND_ATTRIBUTE_COUNT)
+    ]
+    for row in rows:
+        if any(decompressed[row + spirit] > 6 for spirit in range(_WMAP_SPIRIT_COUNT)):
+            raise ValueError(_error_message("error_wmap_essence_table_values"))
+
+    rng = random.Random(seed)
+    changed = 0
+    for spirit in range(_WMAP_SPIRIT_COUNT):
+        original_values = [decompressed[row + spirit] for row in rows]
+        shuffled_values = original_values.copy()
+        for _ in range(512):
+            rng.shuffle(shuffled_values)
+            if shuffled_values != original_values:
+                break
+        else:
+            continue
+        for row, new_value in zip(rows, shuffled_values):
+            if decompressed[row + spirit] != new_value:
+                decompressed[row + spirit] = new_value
+                changed += 1
+
+    if changed:
+        _write_compressed_wmap(wmap_overlay, bytes(decompressed))
+    return changed
 
 
 def _write_compressed_field(field_overlay: Path, decompressed: bytes) -> None:

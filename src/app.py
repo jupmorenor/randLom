@@ -38,6 +38,7 @@ from src.core import (
     randomize_equipment_shop_materials,
     randomize_normal_shop_items,
     randomize_artifact_event_rewards,
+    randomize_essence_levels,
     modify_field_overlay,
     build_disc_image,
     extract_disc_image,
@@ -59,7 +60,7 @@ def application_root() -> Path:
 
 
 class _ExtractionWorker(QThread):
-    succeeded = pyqtSignal(str, int, int, int, int, int, int, int, int, bool)
+    succeeded = pyqtSignal(str, int, int, int, int, int, int, int, int, int, bool)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -73,6 +74,7 @@ class _ExtractionWorker(QThread):
         randomize_equipment_shop_items_enabled: bool,
         randomize_artifacts_enabled: bool,
         randomize_land_levels_enabled: bool,
+        randomize_essence_levels_enabled: bool,
         autorun_enabled: bool,
         scene_transition_mode: str | None,
         parent: QWidget | None = None,
@@ -93,6 +95,7 @@ class _ExtractionWorker(QThread):
         )
         self.randomize_artifacts_enabled = randomize_artifacts_enabled
         self.randomize_land_levels_enabled = randomize_land_levels_enabled
+        self.randomize_essence_levels_enabled = randomize_essence_levels_enabled
         self.autorun_enabled = autorun_enabled
         self.scene_transition_mode = scene_transition_mode
 
@@ -109,6 +112,7 @@ class _ExtractionWorker(QThread):
             scene_transitions_changed = 0
             artifacts_changed = 0
             land_level_entries_changed = 0
+            essence_level_entries_changed = 0
             autorun_changed = False
             if self.randomize_chests_enabled and self.randomize_item_drops_enabled:
                 chests_changed, item_drops_changed = randomize_chests_and_item_drops(
@@ -160,6 +164,10 @@ class _ExtractionWorker(QThread):
                 artifacts_changed = randomize_artifact_event_rewards(
                     extracted_directory, self.seed
                 )
+            if self.randomize_essence_levels_enabled:
+                essence_level_entries_changed = randomize_essence_levels(
+                    extracted_directory, self.seed
+                )
             if (
                 self.randomize_land_levels_enabled
                 or self.autorun_enabled
@@ -178,6 +186,7 @@ class _ExtractionWorker(QThread):
                 equipment_shop_items_changed, scene_transitions_changed,
                 artifacts_changed,
                 land_level_entries_changed,
+                essence_level_entries_changed,
                 autorun_changed,
             )
         except Exception as error:
@@ -260,10 +269,14 @@ class MainWindow(QMainWindow):
         self.seed_button = QPushButton(get_text("seed_button"))
         self.seed_button.clicked.connect(self._add_seed)
         self.seed_label = QLabel(get_text("seed_automatic"))
+        self.new_seed_button = QPushButton(get_text("new_seed_button"))
+        self.new_seed_button.setEnabled(False)
+        self.new_seed_button.clicked.connect(self._generate_new_seed)
         seed_layout = QHBoxLayout()
         seed_layout.addWidget(self.seed_button)
         seed_layout.addWidget(self.seed_label)
         seed_layout.addStretch()
+        seed_layout.addWidget(self.new_seed_button)
 
         self.autorun_checkbox = QCheckBox(get_text("autorun"))
 
@@ -395,6 +408,7 @@ class MainWindow(QMainWindow):
         self.file_path.setPlaceholderText(get_text("file_placeholder"))
         self.browse_button.setText(get_text("browse_file"))
         self.seed_button.setText(get_text("seed_button"))
+        self.new_seed_button.setText(get_text("new_seed_button"))
         self.seed_label.setText(
             get_text("seed_automatic")
             if self.seed is None
@@ -456,9 +470,20 @@ class MainWindow(QMainWindow):
         if accepted:
             self.seed = value
             random.seed(self.seed)
-            self.seed_label.setText(
-                get_text("seed_used").format(seed=self.seed)
-            )
+            self._update_seed_display()
+
+    def _update_seed_display(self) -> None:
+        self.seed_label.setText(
+            get_text("seed_automatic")
+            if self.seed is None
+            else get_text("seed_used").format(seed=self.seed)
+        )
+        self.new_seed_button.setEnabled(self.seed is not None)
+
+    def _generate_new_seed(self) -> None:
+        self.seed = random.randint(0, 2**32 - 1)
+        random.seed(self.seed)
+        self._update_seed_display()
 
     def generate(self) -> None:
         # 1. Check that a disc image has been selected.
@@ -496,9 +521,7 @@ class MainWindow(QMainWindow):
         if self.seed is None:
             self.seed = random.randint(0, 2**32 - 1)
             random.seed(self.seed)
-            self.seed_label.setText(
-                get_text("seed_used").format(seed=self.seed)
-            )
+            self._update_seed_display()
 
         # 4. Confirm before starting extraction.
         confirmation = QMessageBox.question(
@@ -541,6 +564,8 @@ class MainWindow(QMainWindow):
             and self.randomize_artifacts_checkbox.isChecked(),
             self.artifacts_and_lands_checkbox.isChecked()
             and self.randomize_land_levels_checkbox.isChecked(),
+            self.artifacts_and_lands_checkbox.isChecked()
+            and self.randomize_essence_levels_checkbox.isChecked(),
             self.autorun_checkbox.isChecked(),
             self._scene_transition_mode_requested,
             self,
@@ -560,6 +585,7 @@ class MainWindow(QMainWindow):
         scene_transitions_changed: int,
         artifacts_changed: int,
         land_level_entries_changed: int,
+        essence_level_entries_changed: int,
         autorun_changed: bool,
     ) -> None:
         self._chests_changed = chests_changed
@@ -570,6 +596,7 @@ class MainWindow(QMainWindow):
         self._scene_transitions_changed = scene_transitions_changed
         self._artifacts_changed = artifacts_changed
         self._land_level_entries_changed = land_level_entries_changed
+        self._essence_level_entries_changed = essence_level_entries_changed
         self._autorun_changed = autorun_changed
         # 6. Ask for the output directory immediately before building the image.
         output_directory = QFileDialog.getExistingDirectory(
@@ -638,6 +665,10 @@ class MainWindow(QMainWindow):
         if getattr(self, "_land_level_entries_changed", 0):
             object_summary += "\n" + get_text("land_level_entries_changed").format(
                 count=self._land_level_entries_changed
+            )
+        if getattr(self, "_essence_level_entries_changed", 0):
+            object_summary += "\n" + get_text("essence_level_entries_changed").format(
+                count=self._essence_level_entries_changed
             )
         if getattr(self, "_autorun_changed", False):
             object_summary += "\n" + get_text("autorun_enabled")

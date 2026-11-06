@@ -16,6 +16,8 @@ RandLom fue desarrollado con la asistencia de herramientas de inteligencia artif
 
 Pulsa **Agregar semilla** para introducir una semilla numérica. Si no indicas una, RandLom genera una al iniciar el proceso y muestra el valor usado. Conserva ese valor para reproducir una ejecución con las mismas opciones.
 
+Cuando ya exista una semilla, usa **Nueva semilla** para reemplazarla por otro valor aleatorio. Puede ser útil si una semilla no produce una combinación compatible para alguna opción; por ejemplo, si las restricciones de los cambios de escena no permiten formar un conjunto coherente de destinos. Prueba otra semilla y genera de nuevo. Una semilla nueva cambia los resultados de todas las opciones de aleatorización activadas; guárdala si quieres reproducir esa ejecución.
+
 ### Correr automáticamente
 
 Activa **Correr automáticamente** para invertir la condición original de los botones de carrera en el overlay FIELD. Mantener Círculo o L1 hace que el personaje camine; al soltar ambos, corre. El parche cambia únicamente el salto condicional. Si la opción está desactivada, se conserva el comportamiento original del juego.
@@ -49,7 +51,7 @@ Activa **Artefactos y Tierras** para mostrar opciones adicionales del mapa del m
 
 - **Aleatorizar artefactos**: consulta la advertencia de progresión anterior.
 - **Niveles de tierra**: permuta las 63 entradas de rango distintas de cero de la tabla de FIELD que relaciona la distancia con el nivel de los monstruos. Mantiene fijo el rango cero y conserva los valores existentes y su frecuencia, pero cambia qué nivel corresponde a cada rango. La dificultad del juego y los límites de nivel específicos de cada evento siguen aplicándose.
-- **Niveles de esencia**: reservado para una implementación futura.
+- **Niveles de esencia**: permuta por separado los valores iniciales de cada uno de los ocho espíritus entre los artefactos, conservando la distribución de cada espíritu y los flags de colocación. Los niveles finales de las tierras también dependen del terreno y de las tierras vecinas; el cambio se aplica al colocar las tierras, por lo que una partida existente podría conservar niveles ya calculados.
 
 ### Cambio entre escenas
 

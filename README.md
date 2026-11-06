@@ -16,6 +16,8 @@ RandLom was developed with assistance from artificial intelligence tools. The pr
 
 Choose **Add seed** to enter a numeric seed. If you leave it unset, RandLom creates a random seed when generation starts and displays the value used. Keep that value to reproduce a run with the same selections.
 
+After a seed exists, use **New seed** to replace it with another random value. This is useful if a seed does not produce a compatible arrangement for an option—for example, when scene-transition constraints leave no coherent set of destinations. Try another seed and generate again. A new seed changes the results for all enabled randomizers; save it if you want to reproduce that run.
+
 ### Autorun
 
 Enable **Autorun** to invert the game's run-button condition in the FIELD overlay. The patch changes only the conditional branch: holding Circle or L1 walks, while releasing both enables running. When disabled, the game's original behavior is preserved.
@@ -49,7 +51,7 @@ Enable **Artifacts and lands** to reveal additional world-map options:
 
 - **Randomize artifacts**: see the progression warning above.
 - **Land levels**: permutes the 63 nonzero rank entries in FIELD's distance-to-monster-level table, keeping rank zero fixed. It preserves the table's existing level values and their frequency, while changing which levels correspond to each rank. The game's difficulty setting and event-specific level limits still apply.
-- **Essence levels**: reserved for a future feature.
+- **Essence levels**: shuffles each of the eight spirits' initial strengths across the artifact table, preserving each spirit's distribution and the placement flags. The resulting land levels also depend on terrain and neighboring lands; the change is applied when lands are placed, so existing saves may retain levels already calculated.
 
 ### Scene transitions
 
