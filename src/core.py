@@ -26,6 +26,9 @@ _FIELD_RUN_FUNCTION = {
     "us": {"load_address": 0x8004FC70, "function_address": 0x80091AC8},
     "jp": {"load_address": 0x8004FDD8, "function_address": 0x80091554},
 }
+_CD_RESOURCE_ENTRY_SIZE = 8
+_CD_RESOURCE_FIELD_BIN_INDEX = 2
+_CD_DATA_SECTOR_SIZE = 2048
 
 
 def _error_message(key: str, **values: object) -> str:
@@ -97,14 +100,62 @@ def _read_decompressed_field(field_overlay: Path) -> bytearray:
     return decompressed
 
 
+def _updated_field_resource_table(
+    field_overlay: Path, compressed_size: int
+) -> tuple[Path, bytes] | None:
+    """Update FIELD's byte length in the disc's SKCDPOSE resource table."""
+    original_size = field_overlay.stat().st_size
+    if compressed_size == original_size:
+        return None
+
+    table_path = field_overlay.parent.parent / "SKCDPOSE.DAT"
+    if not table_path.is_file():
+        raise FileNotFoundError(
+            _error_message("error_field_resource_table_missing", path=table_path)
+        )
+
+    table = bytearray(table_path.read_bytes())
+    size_offset = (
+        _CD_RESOURCE_FIELD_BIN_INDEX * _CD_RESOURCE_ENTRY_SIZE + 4
+    )
+    if size_offset + 4 > len(table):
+        raise ValueError(_error_message("error_field_resource_table_invalid"))
+
+    recorded_size = struct.unpack_from("<i", table, size_offset)[0]
+    if recorded_size == compressed_size:
+        return None
+    if recorded_size != original_size:
+        raise ValueError(_error_message("error_field_resource_table_mismatch"))
+
+    old_sector_count = (
+        recorded_size + _CD_DATA_SECTOR_SIZE - 1
+    ) // _CD_DATA_SECTOR_SIZE
+    new_sector_count = (
+        compressed_size + _CD_DATA_SECTOR_SIZE - 1
+    ) // _CD_DATA_SECTOR_SIZE
+    if old_sector_count != new_sector_count:
+        raise ValueError(_error_message("error_field_resource_sector_change"))
+
+    struct.pack_into("<i", table, size_offset, compressed_size)
+    return table_path, bytes(table)
+
+
 def _write_compressed_field(field_overlay: Path, decompressed: bytes) -> None:
     compressed_overlay = b"\x01" + _compress_overlay(decompressed[1:])
     if bytes(_decompress_overlay(compressed_overlay[1:])) != decompressed[1:]:
         raise RuntimeError(_error_message("error_field_recompression_verification"))
 
+    resource_table_update = _updated_field_resource_table(
+        field_overlay, len(compressed_overlay)
+    )
     temporary_overlay = field_overlay.with_name(field_overlay.name + ".tmp")
     temporary_overlay.write_bytes(compressed_overlay)
     temporary_overlay.replace(field_overlay)
+    if resource_table_update is not None:
+        table_path, updated_table = resource_table_update
+        temporary_table = table_path.with_name(table_path.name + ".tmp")
+        temporary_table.write_bytes(updated_table)
+        temporary_table.replace(table_path)
 
 
 def _randomize_land_levels_data(
@@ -137,24 +188,25 @@ def _randomize_land_levels_data(
 
 def _enable_autorun_data(decompressed: bytearray, region: str) -> bool:
     layout = _FIELD_RUN_FUNCTION[region]
-    function_offset = layout["function_address"] - layout["load_address"]
-
-    # The original code masks Circle|L1, then branches to the walk path when
-    # neither is held. Autorun masks Circle alone and inverts that branch, so
-    # holding Circle selects walking and releasing it selects running.
-    original = struct.pack("<II", 0x30420044, 0x10400007)
-    patched = struct.pack("<II", 0x30420040, 0x14400007)
+    # The decompressed byte array retains FIELD.BIN's one-byte compression
+    # marker at index 0; virtual addresses map to payload offsets after it.
+    function_offset = layout["function_address"] - layout["load_address"] + 1
+    button_mask_instruction = {"us": 0x30820044, "jp": 0x30420044}[region]
+    original = struct.pack("<2I", button_mask_instruction, 0x10400007)
+    inverted = struct.pack("<2I", button_mask_instruction, 0x14400007)
     search_end = min(function_offset + 0x200, len(decompressed))
     function_code = bytes(decompressed[function_offset:search_end])
 
-    if patched in function_code:
+    if inverted in function_code:
         return False
-    patch_offset = function_code.find(original)
-    if patch_offset < 0 or function_code.find(original, patch_offset + 1) >= 0:
+    if function_code.count(original) != 1:
         raise RuntimeError(_error_message("error_autorun_patch_sequence"))
+    patch_offset = function_code.find(original)
 
-    absolute_patch_offset = function_offset + patch_offset
-    decompressed[absolute_patch_offset:absolute_patch_offset + len(original)] = patched
+    # Negate the original BEQ by changing only its opcode to BNE. Keep the
+    # button mask and all surrounding instructions unchanged.
+    branch_opcode_offset = function_offset + patch_offset + 7
+    decompressed[branch_opcode_offset] = 0x14
     return True
 
 
@@ -839,7 +891,25 @@ def randomize_local_scene_transitions(
 def randomize_global_scene_transitions_with_return(
     project_directory: str | Path, seed: int
 ) -> int:
-    """Swap reciprocal doorway links between lands while keeping each return.
+    """Swap reciprocal doorway links between lands while keeping each return."""
+    return _randomize_scene_transitions_with_return(
+        project_directory, seed, local_only=False
+    )
+
+
+def randomize_local_scene_transitions_with_return(
+    project_directory: str | Path, seed: int
+) -> int:
+    """Swap reciprocal doorway links within each land while keeping each return."""
+    return _randomize_scene_transitions_with_return(
+        project_directory, seed, local_only=True
+    )
+
+
+def _randomize_scene_transitions_with_return(
+    project_directory: str | Path, seed: int, local_only: bool
+) -> int:
+    """Shuffle paired doorway links, optionally restricting swaps to one land.
 
     A reciprocal pair is accepted only when a scene has exactly one literal
     transition to the other scene and that scene has exactly one literal
@@ -908,9 +978,11 @@ def randomize_global_scene_transitions_with_return(
                 if destination is None or destination >= 0xFFFE:
                     continue
                 target_id = destination & 0x7FFF
+                same_land = prefix_by_scene[source_id] == prefix_by_scene.get(target_id)
                 if (target_id in scene_by_id
                         and prefix_by_scene[source_id] not in non_land_prefixes
-                        and prefix_by_scene[target_id] not in non_land_prefixes):
+                        and prefix_by_scene[target_id] not in non_land_prefixes
+                        and (not local_only or same_land)):
                     connectivity_edges.append((source_id, target_id))
             if section[pos] == 0x85:
                 descriptor_start = pos + 1
@@ -934,9 +1006,11 @@ def randomize_global_scene_transitions_with_return(
                         and fields[3][2] in (0, 1, 2)):
                     destination = fields[0][1]
                     target_id = destination & 0x7FFF
+                    same_land = prefix_by_scene[source_id] == prefix_by_scene.get(target_id)
                     if (destination < 0xFFFE and target_id in scene_by_id
                             and prefix_by_scene[source_id] not in non_land_prefixes
-                            and prefix_by_scene[target_id] not in non_land_prefixes):
+                            and prefix_by_scene[target_id] not in non_land_prefixes
+                            and (not local_only or same_land)):
                         record_index = len(records)
                         records.append((source_id, scene_path, tuple(fields)))
                         transitions_by_pair.setdefault((source_id, target_id), []).append(
@@ -958,7 +1032,12 @@ def randomize_global_scene_transitions_with_return(
             (source_id, target_id, forward_indexes[0], reverse_indexes[0])
         )
     if len(reciprocal_pairs) < 2:
-        raise RuntimeError(_error_message("error_not_enough_reciprocal_door_pairs"))
+        error_key = (
+            "error_not_enough_local_reciprocal_door_pairs"
+            if local_only
+            else "error_not_enough_reciprocal_door_pairs"
+        )
+        raise RuntimeError(_error_message(error_key))
 
     def fields_compatible(first: int, second: int) -> bool:
         first_fields = records[first][2]
@@ -975,6 +1054,9 @@ def randomize_global_scene_transitions_with_return(
     ]
     edge_counts: dict[tuple[int, int], int] = {}
     for source_id, target_id in connectivity_edges:
+        if (local_only
+                and prefix_by_scene[source_id] != prefix_by_scene[target_id]):
+            continue
         edge = (min(source_id, target_id), max(source_id, target_id))
         edge_counts[edge] = edge_counts.get(edge, 0) + 1
 
@@ -1037,10 +1119,17 @@ def randomize_global_scene_transitions_with_return(
             orientations = [(x, y, xy, yx, False), (y, x, yx, xy, True)]
             rng.shuffle(orientations)
             for left, right, left_to_right, right_to_left, _ in orientations:
-                # Both resulting connections must cross land-prefix groups.
-                if (prefix_by_scene[a] == prefix_by_scene[left]
-                        or prefix_by_scene[b] == prefix_by_scene[right]):
-                    continue
+                if local_only:
+                    # Local mode must keep both new reciprocal routes in the
+                    # land that owned the original doorway pair.
+                    if (prefix_by_scene[a] != prefix_by_scene[left]
+                            or prefix_by_scene[b] != prefix_by_scene[right]):
+                        continue
+                else:
+                    # Global mode reconnects pairs across land-prefix groups.
+                    if (prefix_by_scene[a] == prefix_by_scene[left]
+                            or prefix_by_scene[b] == prefix_by_scene[right]):
+                        continue
                 # Exchange complete entry payloads so each arrival uses the
                 # spawn that leads back through the paired doorway.
                 assignments = (
@@ -1070,7 +1159,12 @@ def randomize_global_scene_transitions_with_return(
         new_payload_by_record.update(assignments)
 
     if not new_payload_by_record:
-        raise RuntimeError(_error_message("error_no_compatible_return_door_pairs"))
+        error_key = (
+            "error_no_compatible_local_return_door_pairs"
+            if local_only
+            else "error_no_compatible_return_door_pairs"
+        )
+        raise RuntimeError(_error_message(error_key))
 
     changed_by_path: dict[Path, bytearray] = {}
     changed_destinations = 0

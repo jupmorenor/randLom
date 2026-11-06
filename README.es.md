@@ -18,7 +18,7 @@ Pulsa **Agregar semilla** para introducir una semilla numérica. Si no indicas u
 
 ### Correr automáticamente
 
-Activa **Correr automáticamente** para que el personaje controlado corra por defecto. Mantén presionado Círculo para caminar. Esta opción modifica el overlay FIELD; si está desactivada, se conserva el comportamiento original del juego.
+Activa **Correr automáticamente** para invertir la condición original de los botones de carrera en el overlay FIELD. Mantener Círculo o L1 hace que el personaje camine; al soltar ambos, corre. El parche cambia únicamente el salto condicional. Si la opción está desactivada, se conserva el comportamiento original del juego.
 
 ### Aleatorizar objetos
 
@@ -55,7 +55,8 @@ Activa **Artefactos y Tierras** para mostrar opciones adicionales del mapa del m
 
 Activa **Cambio entre escenas** y selecciona uno de los modos excluyentes:
 
-- **Local**: intercambia destinos de habitaciones compatibles dentro de la misma tierra. Agrupa las escenas por el prefijo de su tierra e incluye archivos ubicados tanto en `INFO` como en `MAPINFO`.
+- **Local**: intercambia destinos de habitaciones compatibles dentro de la misma tierra. Agrupa las escenas por el prefijo de su tierra e incluye archivos ubicados tanto en `INFO` como en `MAPINFO`. No conserva los pares de puertas de regreso.
+- **Local con retorno**: intercambia pares de puertas recíprocas compatibles dentro de la misma tierra, de modo que al volver por la puerta de llegada se regresa a la escena de origen.
 - **Global con retorno**: intercambia transiciones compatibles entre tierras, conservando la ruta emparejada para regresar a la escena de origen.
 - **Global extremo**: permuta transiciones compatibles de todo el juego, incluidas salidas al mapa del mundo y destinos especiales cuando es posible. No conserva una ruta de retorno.
 
@@ -77,7 +78,7 @@ Antes de extraer, RandLom busca el identificador norteamericano `SLUS_010.13` o 
 9. Selecciona una carpeta de salida. RandLom crea allí `legend_of_mana.bin` y `legend_of_mana.cue`.
 10. Si la construcción termina correctamente, ya estás listo para jugar.
 
-Conserva juntos los archivos BIN y CUE al usar la imagen generada. Si cancelas después de la extracción y antes de que termine la construcción, la carpeta temporal podría permanecer en la carpeta de la aplicación.
+Conserva juntos los archivos BIN y CUE al usar la imagen generada. Por ahora, la carpeta extraída `legend_of_mana` se conserva después de generar la imagen para facilitar la depuración; elimínala manualmente cuando ya no la necesites. Si cancelas después de la extracción y antes de que termine la construcción, la carpeta también permanecerá en la carpeta de la aplicación.
 
 ## Requisitos y compatibilidad
 

@@ -15,10 +15,17 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from src.lang import get_text
+
 
 RELEASE_API = "https://api.github.com/repos/Lameguy64/mkpsxiso/releases/latest"
 MARKER_NAME = ".mkpsxiso-install.json"
 ARCHIVE_SUFFIXES = (".zip", ".tar.gz", ".tgz", ".tar.xz", ".tar.bz2")
+
+
+def _error_message(key: str, **values: object) -> str:
+    """Return a localized error string, formatting any supplied values."""
+    return get_text(key).format(**values)
 
 
 def _operating_system() -> str:
@@ -28,7 +35,9 @@ def _operating_system() -> str:
         return "macos"
     if sys.platform.startswith("linux"):
         return "linux"
-    raise RuntimeError(f"Sistema operativo no compatible: {sys.platform}")
+    raise RuntimeError(
+        _error_message("error_mkpsxiso_unsupported_os", platform=sys.platform)
+    )
 
 
 def _asset_os(name: str) -> str | None:
@@ -73,7 +82,9 @@ def _select_asset(assets: list[dict[str, Any]], operating_system: str) -> dict[s
     ]
     if not candidates:
         raise RuntimeError(
-            f"La última versión de mkpsxiso no ofrece un archivo comprimido para {operating_system}."
+            _error_message(
+                "error_mkpsxiso_no_os_archive", operating_system=operating_system
+            )
         )
 
     arch = _current_arch()
@@ -85,7 +96,9 @@ def _select_asset(assets: list[dict[str, Any]], operating_system: str) -> dict[s
         candidates = generic
     elif len(candidates) > 1:
         raise RuntimeError(
-            f"No se encontró una descarga compatible con la arquitectura {platform.machine()}."
+            _error_message(
+                "error_mkpsxiso_no_arch_archive", architecture=platform.machine()
+            )
         )
     return candidates[0]
 
@@ -102,7 +115,9 @@ def _request_json(url: str) -> dict[str, Any]:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.load(response)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"No se pudo consultar la última versión de mkpsxiso en GitHub: {error}") from error
+        raise RuntimeError(
+            _error_message("error_mkpsxiso_github_lookup", error=error)
+        ) from error
 
 
 def _download(url: str, destination: Path) -> None:
@@ -111,16 +126,16 @@ def _download(url: str, destination: Path) -> None:
         with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as output:
             shutil.copyfileobj(response, output)
     except (urllib.error.URLError, TimeoutError, OSError) as error:
-        raise RuntimeError(f"No se pudo descargar mkpsxiso: {error}") from error
+        raise RuntimeError(_error_message("error_mkpsxiso_download", error=error)) from error
 
 
 def _safe_archive_path(root: Path, member_name: str) -> Path:
     relative = PurePosixPath(member_name)
     if relative.is_absolute() or ".." in relative.parts:
-        raise RuntimeError("El archivo descargado contiene una ruta no segura.")
+        raise RuntimeError(_error_message("error_mkpsxiso_unsafe_archive_path"))
     destination = root.joinpath(*relative.parts).resolve()
     if not destination.is_relative_to(root.resolve()):
-        raise RuntimeError("El archivo descargado intenta salir de la carpeta de instalación.")
+        raise RuntimeError(_error_message("error_mkpsxiso_archive_path_escape"))
     return destination
 
 
@@ -131,7 +146,9 @@ def _extract_archive(archive: Path, destination: Path) -> None:
                 path = _safe_archive_path(destination, member.filename)
                 unix_mode = member.external_attr >> 16
                 if stat.S_ISLNK(unix_mode):
-                    raise RuntimeError("El archivo descargado contiene un enlace no permitido.")
+                    raise RuntimeError(
+                        _error_message("error_mkpsxiso_archive_symlink")
+                    )
                 if member.is_dir():
                     path.mkdir(parents=True, exist_ok=True)
                     continue
@@ -152,15 +169,19 @@ def _extract_archive(archive: Path, destination: Path) -> None:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     source = tarred.extractfile(member)
                     if source is None:
-                        raise RuntimeError("No se pudo leer un archivo del paquete descargado.")
+                        raise RuntimeError(
+                            _error_message("error_mkpsxiso_archive_member_unreadable")
+                        )
                     with source, path.open("wb") as output:
                         shutil.copyfileobj(source, output)
                     path.chmod(member.mode & 0o777)
                 else:
-                    raise RuntimeError("El archivo descargado contiene un enlace o tipo de archivo no permitido.")
+                    raise RuntimeError(
+                        _error_message("error_mkpsxiso_archive_member_type")
+                    )
         return
 
-    raise RuntimeError("El archivo descargado no es un ZIP ni un TAR compatible.")
+    raise RuntimeError(_error_message("error_mkpsxiso_archive_format"))
 
 
 def _find_binary(application_root: Path, binary_name: str) -> Path | None:
@@ -211,7 +232,9 @@ def ensure_mkpsxiso(application_root: Path) -> str | None:
     binary_path = _find_binary(application_root, binary_name)
     if binary_path is None:
         raise RuntimeError(
-            f"La descarga terminó, pero no se encontró {binary_name} en los archivos extraídos."
+            _error_message(
+                "error_mkpsxiso_binary_missing", binary_name=binary_name
+            )
         )
     if operating_system != "windows":
         binary_path.chmod(binary_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

@@ -18,7 +18,7 @@ Choose **Add seed** to enter a numeric seed. If you leave it unset, RandLom crea
 
 ### Autorun
 
-Enable **Autorun** to make the controlled character run by default. Hold Circle to walk. This patches the FIELD overlay; when disabled, the game's original run-button behavior is preserved.
+Enable **Autorun** to invert the game's run-button condition in the FIELD overlay. The patch changes only the conditional branch: holding Circle or L1 walks, while releasing both enables running. When disabled, the game's original behavior is preserved.
 
 ### Randomize items
 
@@ -55,7 +55,8 @@ Enable **Artifacts and lands** to reveal additional world-map options:
 
 Enable **Scene transitions** and choose one of the mutually exclusive modes:
 
-- **Local**: shuffles compatible room destinations within the same land. Scene files are grouped by their land prefix, including scenes stored under both `INFO` and `MAPINFO`.
+- **Local**: shuffles compatible room destinations within the same land. Scene files are grouped by their land prefix, including scenes stored under both `INFO` and `MAPINFO`. It does not preserve paired return doors.
+- **Local with return**: shuffles compatible reciprocal door pairs within the same land, so returning through the arrival doorway leads back to the scene you left.
 - **Global with return**: shuffles compatible transitions across lands while keeping the paired route back to the source scene.
 - **Global extreme**: permutes compatible transitions across the game, including world-map exits and special destinations where possible. It does not preserve a return route.
 
@@ -77,7 +78,7 @@ Before extraction, RandLom checks for the North American game ID `SLUS_010.13` o
 9. Choose an output folder. RandLom builds `legend_of_mana.bin` and `legend_of_mana.cue` in that folder.
 10. When the build succeeds, you are ready to play.
 
-Keep both the BIN and CUE files together when using the generated image. If generation is cancelled after extraction but before the build finishes, the temporary extraction may remain in the application directory.
+Keep both the BIN and CUE files together when using the generated image. The extracted `legend_of_mana` folder is currently kept after generation for debugging; remove it manually when it is no longer needed. If generation is cancelled after extraction but before the build finishes, the extraction also remains in the application directory.
 
 ## Requirements and compatibility
 

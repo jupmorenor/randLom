@@ -1,7 +1,6 @@
 """Application GUI."""
 
 import random
-import shutil
 import sys
 from pathlib import Path
 
@@ -33,13 +32,12 @@ from src.core import (
     randomize_chests,
     randomize_chests_and_item_drops,
     randomize_local_scene_transitions,
+    randomize_local_scene_transitions_with_return,
     randomize_global_scene_transitions_with_return,
     randomize_extreme_global_scene_transitions,
     randomize_equipment_shop_materials,
     randomize_normal_shop_items,
     randomize_artifact_event_rewards,
-    randomize_land_levels,
-    enable_autorun,
     modify_field_overlay,
     build_disc_image,
     extract_disc_image,
@@ -140,6 +138,12 @@ class _ExtractionWorker(QThread):
                 scene_transitions_changed = randomize_local_scene_transitions(
                     extracted_directory, self.seed
                 )
+            elif self.scene_transition_mode == "local_return":
+                scene_transitions_changed = (
+                    randomize_local_scene_transitions_with_return(
+                        extracted_directory, self.seed
+                    )
+                )
             elif self.scene_transition_mode == "global_return":
                 scene_transitions_changed = (
                     randomize_global_scene_transitions_with_return(
@@ -156,21 +160,18 @@ class _ExtractionWorker(QThread):
                 artifacts_changed = randomize_artifact_event_rewards(
                     extracted_directory, self.seed
                 )
-            if self.randomize_land_levels_enabled and self.autorun_enabled:
+            if (
+                self.randomize_land_levels_enabled
+                or self.autorun_enabled
+            ):
                 (
                     land_level_entries_changed,
                     autorun_changed,
                 ) = modify_field_overlay(
                     extracted_directory,
-                    seed=self.seed,
-                    autorun_enabled=True,
+                    seed=self.seed if self.randomize_land_levels_enabled else None,
+                    autorun_enabled=self.autorun_enabled,
                 )
-            elif self.randomize_land_levels_enabled:
-                land_level_entries_changed = randomize_land_levels(
-                    extracted_directory, self.seed
-                )
-            elif self.autorun_enabled:
-                autorun_changed = enable_autorun(extracted_directory)
             self.succeeded.emit(
                 str(extracted_directory), chests_changed, item_drops_changed,
                 equipment_drops_changed, normal_shop_slots_changed,
@@ -332,6 +333,9 @@ class MainWindow(QMainWindow):
         self.scene_change_mode_group = QButtonGroup(self)
         self.scene_change_mode_group.setExclusive(True)
         self.scene_change_local_radio = QRadioButton(get_text("scene_local"))
+        self.scene_change_local_return_radio = QRadioButton(
+            get_text("scene_local_return")
+        )
         self.scene_change_global_return_radio = QRadioButton(
             get_text("scene_global_return")
         )
@@ -340,6 +344,7 @@ class MainWindow(QMainWindow):
         )
         for radio_button in (
             self.scene_change_local_radio,
+            self.scene_change_local_return_radio,
             self.scene_change_global_return_radio,
             self.scene_change_global_extreme_radio,
         ):
@@ -417,6 +422,7 @@ class MainWindow(QMainWindow):
         self.scene_change_checkbox.setText(get_text("scene_changes"))
         self.scene_change_group.setTitle(get_text("scene_change_mode"))
         self.scene_change_local_radio.setText(get_text("scene_local"))
+        self.scene_change_local_return_radio.setText(get_text("scene_local_return"))
         self.scene_change_global_return_radio.setText(
             get_text("scene_global_return")
         )
@@ -510,6 +516,8 @@ class MainWindow(QMainWindow):
         if self.scene_change_checkbox.isChecked():
             if self.scene_change_local_radio.isChecked():
                 self._scene_transition_mode_requested = "local"
+            elif self.scene_change_local_return_radio.isChecked():
+                self._scene_transition_mode_requested = "local_return"
             elif self.scene_change_global_return_radio.isChecked():
                 self._scene_transition_mode_requested = "global_return"
             elif self.scene_change_global_extreme_radio.isChecked():
@@ -596,22 +604,8 @@ class MainWindow(QMainWindow):
         self._build_worker.start()
 
     def _generation_succeeded(self, output_image: str) -> None:
-        # 7. Remove extracted source files after the image has been saved.
-        extracted_directory = application_root() / "legend_of_mana"
-        try:
-            shutil.rmtree(extracted_directory)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            QMessageBox.warning(
-                self,
-                get_text("cleanup_failed_title"),
-                get_text("cleanup_failed_message").format(
-                    directory=extracted_directory
-                ),
-            )
-
-        # 8. Report completion and show where the image was saved.
+        # Keep extracted files temporarily so FIELD.BIN can be inspected.
+        # Report completion and show where the image was saved.
         self.generate_button.setEnabled(True)
         self._show_status("status_image_built", 10000)
         object_summary = ""
@@ -650,6 +644,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "_scene_transition_mode_requested", None):
             mode_label = {
                 "local": get_text("scene_local"),
+                "local_return": get_text("scene_local_return"),
                 "global_return": get_text("scene_global_return"),
                 "global_extreme": get_text("scene_global_extreme"),
             }.get(self._scene_transition_mode_requested, self._scene_transition_mode_requested)
