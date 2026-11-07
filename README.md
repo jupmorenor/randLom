@@ -41,7 +41,7 @@ Enable **Item shops** to reveal:
 
 ### Randomize artifacts
 
-**Randomize artifacts** permutes the artifact IDs granted by reachable event-script commands that make an artifact available. It only shuffles existing artifact rewards: it does not add rewards to events that give items or have no artifact reward, and it preserves the original reward pool without replacement.
+**Randomize artifacts** permutes eligible artifact IDs across scene unlock commands and the direct grants in FIELD's default-land routine. It excludes the required Mailbox (`0x00`), unnamed or unused land records, and Lucemia's second-form record. The randomizer does not add reward destinations and preserves the eligible artifact pool without replacement.
 
 Artifact availability can be part of story progression. Some events may check for a specific artifact or depend on its placement, so this option can make progression difficult or block an event. The randomizer does not adjust those dependencies. Back up your saves and preferably start a new game when using this option; already-unlocked artifacts in an existing save are not changed retroactively.
 
@@ -72,7 +72,7 @@ Before extraction, RandLom checks for the North American game ID `SLUS_010.13` o
 2. Select a Legend of Mana PlayStation 1 disc image. The file picker accepts `.cue`, `.bin`, and `.img` files. Select the CUE sheet for multi-track discs. Raw `.bin` and `.img` images must use 2352-byte sectors; ordinary 2048-byte ISO images are not supported by `dumpsxiso`.
 3. Optionally enter a numeric seed. If omitted, RandLom generates one and displays it.
 4. Enable the randomization sections and individual options you want. Select at most one scene-transition mode.
-   If you enable **Randomize artifacts**, be aware that changing event rewards can interfere with story progression; see the warning above.
+   If you enable **Randomize artifacts**, be aware that changing artifact grants can interfere with story progression; see the warning above.
 5. Click **Generate**. RandLom validates the game ID before proceeding.
 6. If `mkpsxiso` is not installed beside the application, approve its download. RandLom downloads the latest GitHub release archive matching the current operating system and, when available, architecture. This download requires an internet connection.
 7. If you did not enter a seed, RandLom creates one and displays it. Review the seed in the generation confirmation dialog and accept to continue.

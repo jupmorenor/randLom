@@ -249,8 +249,9 @@ class _ExtractionWorker(QThread):
                         extracted_directory, self.seed
                     )
                 )
+            artifact_field_data = None
             if self.randomize_artifacts_enabled:
-                artifacts_changed = randomize_artifact_event_rewards(
+                artifacts_changed, artifact_field_data = randomize_artifact_event_rewards(
                     extracted_directory, self.seed
                 )
             if self.randomize_essence_levels_enabled:
@@ -260,6 +261,7 @@ class _ExtractionWorker(QThread):
             if (
                 self.randomize_land_levels_enabled
                 or self.autorun_enabled
+                or artifact_field_data is not None
             ):
                 (
                     land_level_entries_changed,
@@ -268,6 +270,7 @@ class _ExtractionWorker(QThread):
                     extracted_directory,
                     seed=self.seed if self.randomize_land_levels_enabled else None,
                     autorun_enabled=self.autorun_enabled,
+                    decompressed_data=artifact_field_data,
                 )
             self.succeeded.emit(
                 str(extracted_directory), chests_changed, item_drops_changed,

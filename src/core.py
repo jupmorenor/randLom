@@ -17,6 +17,56 @@ from src.lang import get_text
 
 LEGEND_OF_MANA_DISC_IDS = (b"SLUS_010.13", b"SLPS_021.70")
 
+# Item IDs with both a name and an item-type description in SHOP.BIN's
+# item text tables (verified against the extracted North American game data).
+_SAFE_ITEM_ID_RANGES = (
+    (0x00, 0x96),
+    (0xA0, 0xAD),
+    (0xB0, 0xB4),
+    (0xC0, 0xC4),
+    (0xD0, 0xD2),
+    (0xD8, 0xD9),
+    (0xE0, 0xE6),
+    (0xF0, 0xF4),
+)
+_SAFE_ITEM_IDS = tuple(
+    item_id
+    for first, last in _SAFE_ITEM_ID_RANGES
+    for item_id in range(first, last + 1)
+)
+_SAFE_ITEM_ID_SET = frozenset(_SAFE_ITEM_IDS)
+_SAFE_PRIMARY_MATERIAL_IDS = tuple(
+    item_id for item_id in _SAFE_ITEM_IDS if item_id < 0x40
+)
+
+# Named, placeable artifacts from lom-decomp's FieldLandId enum. Home (Mailbox),
+# unnamed/unused/test records, and Lucemia's second-form record are excluded.
+_SAFE_ARTIFACT_IDS = (
+    0x01, 0x02, 0x03, 0x04, 0x05,
+    0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
+    0x0F, 0x10, 0x11, 0x12, 0x13,
+    0x15, 0x17, 0x18, 0x19, 0x1A, 0x1B,
+    0x1E, 0x1F, 0x20,
+)
+_SAFE_ARTIFACT_ID_SET = frozenset(_SAFE_ARTIFACT_IDS)
+
+_FIELD_DIRECT_ARTIFACT_GRANTS = {
+    "us": {
+        "load_address": 0x8004FC70,
+        "function_address": 0x800C8830,
+        "function_end": 0x800C8938,
+        "award_function": 0x800CA1A0,
+        "safe_grant_count": 27,
+    },
+    "jp": {
+        "load_address": 0x8004FDD8,
+        "function_address": 0x800C8400,
+        "function_end": 0x800C8508,
+        "award_function": 0x800C9D6C,
+        "safe_grant_count": 27,
+    },
+}
+
 _FIELD_MONSTER_LEVEL_TABLE = {
     "us": {"load_address": 0x8004FC70, "table_address": 0x800F0AE8},
     "jp": {"load_address": 0x8004FDD8, "table_address": 0x800F05F8},
@@ -325,9 +375,10 @@ def modify_field_overlay(
     project_directory: str | Path,
     seed: int | None = None,
     autorun_enabled: bool = False,
+    decompressed_data: bytearray | None = None,
 ) -> tuple[int, bool]:
     """Apply selected FIELD edits using one decompression and compression pass."""
-    if seed is None and not autorun_enabled:
+    if seed is None and not autorun_enabled and decompressed_data is None:
         return 0, False
 
     project = Path(project_directory).expanduser().resolve()
@@ -339,7 +390,11 @@ def modify_field_overlay(
         )
 
     region = _detect_disc_region(project, bin_directory)
-    decompressed = _read_decompressed_field(field_overlay)
+    decompressed = (
+        decompressed_data
+        if decompressed_data is not None
+        else _read_decompressed_field(field_overlay)
+    )
     land_levels_changed = (
         _randomize_land_levels_data(decompressed, region, seed)
         if seed is not None
@@ -349,7 +404,7 @@ def modify_field_overlay(
         _enable_autorun_data(decompressed, region) if autorun_enabled else False
     )
 
-    if land_levels_changed or autorun_changed:
+    if land_levels_changed or autorun_changed or decompressed_data is not None:
         _write_compressed_field(field_overlay, bytes(decompressed))
     return land_levels_changed, autorun_changed
 
@@ -686,16 +741,77 @@ def _scene_paths_from_manifest(project_directory: Path) -> list[Path]:
     find_ana(tree)
     return scenes
 
+def _direct_artifact_grant_sites(
+    decompressed_field: bytes | bytearray, region: str
+) -> list[tuple[int, int]]:
+    """Find safe immediate grants in FIELD's default-land routine.
+
+    Returns virtual instruction addresses and existing artifact IDs. The
+    routine's first grant is the required Mailbox (0x00), while the remaining
+    calls may include unused test IDs; both are deliberately filtered out.
+    """
+    layout = _FIELD_DIRECT_ARTIFACT_GRANTS[region]
+    load_address = layout["load_address"]
+    start = layout["function_address"] - load_address + 1
+    end = layout["function_end"] - load_address + 1
+    award_function = layout["award_function"]
+    if start < 1 or end > len(decompressed_field) or start >= end:
+        raise ValueError(_error_message("error_artifact_grant_layout"))
+
+    sites = []
+    for offset in range(start, end - 4, 4):
+        instruction = struct.unpack_from("<I", decompressed_field, offset)[0]
+        if instruction >> 26 != 0x03:  # MIPS JAL
+            continue
+        virtual_address = load_address + offset - 1
+        target = ((virtual_address + 4) & 0xF0000000) | ((instruction & 0x03FFFFFF) << 2)
+        if target != award_function:
+            continue
+
+        # The argument is loaded in the JAL delay slot.  The initial Mailbox
+        # uses "move a0, zero" and unused slots use IDs outside the safe catalog.
+        delay_offset = offset + 4
+        delay_instruction = struct.unpack_from("<I", decompressed_field, delay_offset)[0]
+        if delay_instruction & 0xFFFF0000 != 0x24040000:
+            continue
+        artifact_id = delay_instruction & 0xFFFF
+        if artifact_id in _SAFE_ARTIFACT_ID_SET:
+            sites.append((load_address + delay_offset - 1, artifact_id))
+    if len(sites) != layout["safe_grant_count"]:
+        raise ValueError(_error_message("error_artifact_grant_layout"))
+    return sites
+
+
+def _apply_direct_artifact_grants(
+    decompressed_field: bytearray,
+    region: str,
+    replacements: tuple[tuple[int, int, int], ...],
+) -> bool:
+    """Apply artifact IDs to FIELD's direct-grant call arguments."""
+    if not replacements:
+        return False
+    layout = _FIELD_DIRECT_ARTIFACT_GRANTS[region]
+    for virtual_address, old_id, new_id in replacements:
+        offset = virtual_address - layout["load_address"] + 1
+        if offset < 1 or offset + 4 > len(decompressed_field):
+            raise ValueError(_error_message("error_artifact_grant_layout"))
+        instruction = struct.unpack_from("<I", decompressed_field, offset)[0]
+        if (instruction & 0xFFFF0000) != 0x24040000 or (instruction & 0xFFFF) != old_id:
+            raise ValueError(_error_message("error_artifact_grant_mismatch"))
+        struct.pack_into("<I", decompressed_field, offset, (instruction & 0xFFFF0000) | new_id)
+    return any(old_id != new_id for _, old_id, new_id in replacements)
+
+
 def randomize_artifact_event_rewards(
     project_directory: str | Path, seed: int
-) -> int:
-    """Permute literal artifact unlocks in reachable scene event scripts.
+) -> tuple[int, bytearray | None]:
+    """Permute eligible scene unlocks and FIELD's direct artifact grants.
 
-    Artifact rewards are FIELD's ``make_land_available`` command (opcode
-    0x44, subcommand 0x0F), not inventory item IDs. Only direct literal land
-    indices in the valid 0..63 range are included; variable-driven and other
-    dynamic operands are left unchanged. Reward values are shuffled without
-    replacement, preserving the original multiset of unlocked artifacts.
+    Scene unlocks are FIELD's ``make_land_available`` command (opcode 0x44,
+    subcommand 0x0F). Direct grants in FIELD's default-land routine are part of
+    the same pool. Mailbox (0x00), unnamed/unused/test IDs, and dynamic scene
+    operands are excluded. Returns the total changed destinations and an
+    already-decompressed FIELD buffer when direct-grant changes need writing.
     """
     project = Path(project_directory).expanduser().resolve()
     ana = project / "ANA"
@@ -756,7 +872,7 @@ def randomize_artifact_event_rewards(
                 if (
                     subcommand == 0x0F
                     and artifact_id is not None
-                    and 0 <= artifact_id < 64
+                    and artifact_id in _SAFE_ARTIFACT_ID_SET
                     and argument_width in (1, 2)
                 ):
                     records.append(
@@ -767,10 +883,20 @@ def randomize_artifact_event_rewards(
                 target for target in successors if 0 <= target < len(section)
             )
 
-    if len(records) < 2:
-        return 0
+    field_overlay = project / "BIN" / "FIELD.BIN"
+    if not field_overlay.is_file():
+        raise FileNotFoundError(
+            _error_message("error_field_overlay_missing", path=field_overlay)
+        )
+    region = _detect_disc_region(project, field_overlay.parent)
+    decompressed_field = _read_decompressed_field(field_overlay)
+    direct_sites = _direct_artifact_grant_sites(decompressed_field, region)
 
     original_values = [record[3] for record in records]
+    original_values.extend(artifact_id for _, artifact_id in direct_sites)
+    if len(original_values) < 2:
+        return 0, None
+
     shuffled_values = original_values.copy()
     rng = random.Random(seed)
     for _ in range(512):
@@ -778,11 +904,13 @@ def randomize_artifact_event_rewards(
         if shuffled_values != original_values:
             break
     else:
-        return 0
+        return 0, None
 
     changed_by_path: dict[Path, bytearray] = {}
     changed = 0
-    for (scene_path, offset, width, old_value), new_value in zip(records, shuffled_values):
+    for (scene_path, offset, width, old_value), new_value in zip(
+        records, shuffled_values[:len(records)]
+    ):
         if old_value == new_value:
             continue
         scene_data = changed_by_path.setdefault(
@@ -791,9 +919,20 @@ def randomize_artifact_event_rewards(
         struct.pack_into("<B" if width == 1 else "<H", scene_data, offset, new_value)
         changed += 1
 
+    direct_replacements = tuple(
+        (address, old_id, new_id)
+        for (address, old_id), new_id in zip(
+            direct_sites, shuffled_values[len(records):]
+        )
+    )
+    direct_changed = _apply_direct_artifact_grants(
+        decompressed_field, region, direct_replacements
+    )
+    changed += sum(old_id != new_id for _, old_id, new_id in direct_replacements)
+
     for scene_path, scene_data in changed_by_path.items():
         scene_path.write_bytes(scene_data)
-    return changed
+    return changed, decompressed_field if direct_changed else None
 
 
 def _connected_components(
@@ -1839,7 +1978,7 @@ def randomize_equipment_drop_materials(
             mutable = bytearray(original)
             for offset in offsets:
                 info = struct.unpack_from("<I", mutable, offset)[0]
-                material = rng.randrange(64)  # IDs 0–63 are primary materials.
+                material = rng.choice(_SAFE_PRIMARY_MATERIAL_IDS)
                 info = (info & ~(0x3F << 16)) | (material << 16)
                 struct.pack_into("<I", mutable, offset, info)
                 count += 1
@@ -1889,12 +2028,13 @@ def _randomize_item_destinations(
             raise RuntimeError(_error_message("error_no_compatible_chests"))
         raise RuntimeError(_error_message("error_no_compatible_item_drops"))
 
-    item_kinds = tuple(range(0xFF))
     rng = random.Random(seed)
     for path, offset, current_item, width in destinations:
         # Choose with replacement across destinations; only avoid a destination
         # keeping its original value by chance.
-        replacement_pool = item_kinds[:current_item] + item_kinds[current_item + 1:]
+        replacement_pool = tuple(
+            item_id for item_id in _SAFE_ITEM_IDS if item_id != current_item
+        )
         replacement = rng.choice(replacement_pool)
         if width == 2:
             struct.pack_into("<H", changed[path], offset, replacement)
@@ -2012,7 +2152,8 @@ def randomize_normal_shop_items(
                     continue
                 for offset, word in entries:
                     # Bit 8=0: the low byte is a global item kind, not a template.
-                    if not (word & 0x100) and (word & 0xFF) != 0xFF:
+                    item_id = word & 0xFF
+                    if not (word & 0x100) and item_id in _SAFE_ITEM_ID_SET:
                         destinations.append((path, offset, word))
 
     if not destinations:
@@ -2201,7 +2342,7 @@ def randomize_equipment_shop_materials(
                 if category in (0, 1):
                     material_table_offset = 4 + 32 * 0x0C
                     candidates = [
-                        value for value in range(64)
+                        value for value in _SAFE_PRIMARY_MATERIAL_IDS
                         if value != current_material
                         and struct.unpack_from(
                             "<H", item_table,
@@ -2210,7 +2351,7 @@ def randomize_equipment_shop_materials(
                     ]
                 else:
                     candidates = [
-                        value for value in range(64)
+                        value for value in _SAFE_PRIMARY_MATERIAL_IDS
                         if value != current_material
                     ]
                 if not candidates:

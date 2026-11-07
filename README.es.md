@@ -41,7 +41,7 @@ Activa **Tiendas de objetos** para mostrar:
 
 ### Aleatorizar artefactos
 
-**Aleatorizar artefactos** permuta los identificadores de artefactos concedidos por comandos alcanzables de los scripts de eventos que habilitan un artefacto. Solo intercambia recompensas de artefactos existentes: no agrega recompensas a eventos que dan objetos o no tienen recompensa de artefacto, y conserva el conjunto original sin reemplazo.
+**Aleatorizar artefactos** permuta identificadores elegibles entre los comandos de desbloqueo de las escenas y las concesiones directas de la rutina de tierras predeterminadas de FIELD. Excluye el Mailbox (`0x00`), necesario para iniciar el juego, los registros de tierra sin nombre o sin uso y el registro de la segunda forma de Lucemia. No agrega destinos de recompensa y conserva el conjunto elegible sin reemplazo.
 
 La disponibilidad de artefactos puede formar parte de la progresión de la historia. Algunos eventos podrían comprobar un artefacto específico o depender de su colocación, por lo que esta opción puede dificultar el avance o bloquear un evento. El aleatorizador no ajusta esas dependencias. Haz una copia de seguridad de tus partidas y, de preferencia, comienza una partida nueva al activar esta opción; los artefactos ya desbloqueados en una partida existente no se cambian retroactivamente.
 
@@ -72,7 +72,7 @@ Antes de extraer, RandLom busca el identificador norteamericano `SLUS_010.13` o 
 2. Selecciona una imagen de disco de Legend of Mana para PlayStation 1. El selector acepta `.cue`, `.bin` e `.img`. Para discos con varias pistas, selecciona el archivo CUE. Las imágenes raw `.bin` y `.img` deben tener sectores de 2352 bytes; las ISO convencionales con sectores de 2048 bytes no son compatibles con `dumpsxiso`.
 3. Si quieres, introduce una semilla numérica. Si la dejas vacía, RandLom generará y mostrará una automáticamente.
 4. Activa las secciones y opciones de aleatorización que quieras. En cambio entre escenas solo puedes seleccionar un modo.
-   Si activas **Aleatorizar artefactos**, ten en cuenta que cambiar las recompensas de eventos puede afectar la progresión de la historia; consulta la advertencia anterior.
+   Si activas **Aleatorizar artefactos**, ten en cuenta que cambiar las concesiones de artefactos puede afectar la progresión de la historia; consulta la advertencia anterior.
 5. Pulsa **Generar**. RandLom valida el identificador del juego antes de continuar.
 6. Si `mkpsxiso` no está instalado junto a la aplicación, acepta su descarga. RandLom descarga el archivo comprimido más reciente de GitHub correspondiente al sistema operativo y, cuando está disponible, a la arquitectura. Se requiere conexión a internet.
 7. Si no introdujiste una semilla, RandLom genera una y la muestra. Revisa el valor en el cuadro de confirmación y acepta para continuar.
