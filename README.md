@@ -69,7 +69,7 @@ Before extraction, RandLom checks for the North American game ID `SLUS_010.13` o
 ## Create a modified image
 
 1. Start RandLom and choose the interface language from **Language** if needed.
-2. Select a Legend of Mana PlayStation 1 disc image. The file picker accepts `.cue`, `.bin`, `.iso`, `.img`, `.ccd`, `.chd`, `.mdf`, `.mds`, `.pbp`, `.toc`, and `.cbn` files. For multi-track discs, select the CUE sheet so the tracks are available to the extractor.
+2. Select a Legend of Mana PlayStation 1 disc image. The file picker accepts `.cue`, `.bin`, and `.img` files. Select the CUE sheet for multi-track discs. Raw `.bin` and `.img` images must use 2352-byte sectors; ordinary 2048-byte ISO images are not supported by `dumpsxiso`.
 3. Optionally enter a numeric seed. If omitted, RandLom generates one and displays it.
 4. Enable the randomization sections and individual options you want. Select at most one scene-transition mode.
    If you enable **Randomize artifacts**, be aware that changing event rewards can interfere with story progression; see the warning above.
@@ -121,7 +121,7 @@ GitHub Actions builds the application with Python **3.12** for:
 - Linux x64 (`RandLom-linux-x64.tar.gz`)
 - macOS ARM64 (`RandLom-macos-arm64.zip`)
 
-The file picker offers common PlayStation image extensions, but actual support depends on whether the selected format is readable by the bundled `dumpsxiso` version. CUE sheets and raw BIN/2352-sector images are the recommended input formats.
+The file picker accepts `.cue`, `.bin`, and `.img`. Select a CUE sheet for multi-track discs. Raw BIN/IMG images must use 2352-byte sectors; ordinary 2048-byte ISO images are not supported by `dumpsxiso`.
 
 ## Dependencies
 

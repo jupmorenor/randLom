@@ -41,13 +41,17 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install --upgrade PyInstaller PyQt6
 
-      - name: Build Windows or Linux executable
-        if: matrix.platform != 'macos-arm64'
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name RandLom main.py
+      - name: Build Windows executable
+        if: matrix.platform == 'windows-x64'
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name RandLom --icon src/assets/LoM_Chest_Isolated.ico --add-data "src/assets;src/assets" main.py
+
+      - name: Build Linux executable
+        if: matrix.platform == 'linux-x64'
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name RandLom --add-data "src/assets:src/assets" main.py
 
       - name: Build macOS app bundle
         if: matrix.platform == 'macos-arm64'
-        run: python -m PyInstaller --noconfirm --clean --windowed --name RandLom main.py
+        run: python -m PyInstaller --noconfirm --clean --windowed --name RandLom --add-data "src/assets:src/assets" main.py
 
       - name: Package Windows executable
         if: matrix.platform == 'windows-x64'

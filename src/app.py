@@ -1,14 +1,17 @@
 """Application GUI."""
 
 import random
+import shutil
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QActionGroup
+from PyQt6.QtCore import QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QCheckBox,
     QButtonGroup,
+    QApplication,
+    QDialog,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -48,8 +51,82 @@ from src.mkpsxiso import ensure_mkpsxiso, mkpsxiso_is_installed
 from src.lang import get_language, get_text, set_language
 
 PS1_IMAGE_EXTENSIONS = {
-    ".cue", ".bin", ".iso", ".img", ".ccd", ".chd", ".mdf", ".mds", ".pbp", ".toc", ".cbn"
+    ".cue", ".bin", ".img"
 }
+
+
+class _WaitingSpinner(QWidget):
+    """Paint a small animated waiting spinner without external dependencies."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(48, 48)
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(60)
+        self._timer.timeout.connect(self._advance)
+
+    def start(self) -> None:
+        self._timer.start()
+        self.update()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def _advance(self) -> None:
+        self._angle = (self._angle + 30) % 360
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt event name
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.translate(self.rect().center())
+        painter.rotate(self._angle)
+        center_color = self.palette().color(self.foregroundRole())
+        for spoke in range(12):
+            opacity = 0.18 + 0.82 * (spoke + 1) / 12
+            color = QColor(center_color)
+            color.setAlphaF(opacity)
+            pen = QPen(color, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(0, -15, 0, -21)
+            painter.rotate(30)
+
+
+class _GenerationProgressDialog(QDialog):
+    """Modal, indeterminate progress dialog for extraction and image building."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(get_text("generation_in_progress"))
+        self.setWindowModality(Qt.WindowModality.WindowModal)
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        self.setFixedSize(300, 140)
+
+        self.spinner = _WaitingSpinner(self)
+        self.message = QLabel(self)
+        self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout = QVBoxLayout(self)
+        layout.addStretch()
+        layout.addWidget(self.spinner, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.message)
+        layout.addStretch()
+
+    def set_message(self, message: str) -> None:
+        self.message.setText(message)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt event name
+        super().showEvent(event)
+        self.spinner.start()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt event name
+        self.spinner.stop()
+        super().closeEvent(event)
+
+    def reject(self) -> None:
+        """Keep the user from dismissing the dialog while work is running."""
 
 
 def application_root() -> Path:
@@ -57,6 +134,18 @@ def application_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+
+
+def application_asset_path(relative_path: str) -> Path:
+    """Return an asset path in development and PyInstaller builds."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return bundle_root / relative_path
+
+
+def application_icon_path() -> Path:
+    """Select the native Windows icon or the PNG icon on other platforms."""
+    filename = "LoM_Chest_Isolated.ico" if sys.platform == "win32" else "LoM_Chest.png"
+    return application_asset_path(f"src/assets/{filename}")
 
 
 class _ExtractionWorker(QThread):
@@ -194,7 +283,7 @@ class _ExtractionWorker(QThread):
 
 
 class _BuildWorker(QThread):
-    succeeded = pyqtSignal(str)
+    succeeded = pyqtSignal(str, str)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -214,7 +303,18 @@ class _BuildWorker(QThread):
                 self.output_directory,
                 application_root(),
             )
-            self.succeeded.emit(str(output_image))
+            cleanup_error = ""
+            app_root = application_root().resolve()
+            expected_directory = (app_root / "legend_of_mana").resolve()
+            extracted_directory = self.extracted_directory.resolve()
+            if extracted_directory == expected_directory and expected_directory.is_dir():
+                try:
+                    shutil.rmtree(expected_directory)
+                except OSError:
+                    cleanup_error = str(expected_directory)
+            elif extracted_directory.exists():
+                cleanup_error = str(extracted_directory)
+            self.succeeded.emit(str(output_image), cleanup_error)
         except Exception as error:
             self.failed.emit(str(error))
 
@@ -225,10 +325,13 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(get_text("window_title"))
+        self.setWindowIcon(QIcon(str(application_icon_path())))
+        QApplication.setWindowIcon(self.windowIcon())
         self.resize(800, 600)
         self.seed: int | None = None
         self._extraction_worker: _ExtractionWorker | None = None
         self._build_worker: _BuildWorker | None = None
+        self._progress_dialog: _GenerationProgressDialog | None = None
         self.language_toolbar = QToolBar()
         self.language_toolbar.setMovable(False)
         self.addToolBar(self.language_toolbar)
@@ -450,6 +553,20 @@ class MainWindow(QMainWindow):
         self._status_key = field_name
         self.statusBar().showMessage(get_text(field_name), timeout)
 
+    def _show_generation_progress(self, message_key: str) -> None:
+        if self._progress_dialog is None:
+            self._progress_dialog = _GenerationProgressDialog(self)
+        self._progress_dialog.setWindowTitle(get_text("generation_in_progress"))
+        self._progress_dialog.set_message(get_text(message_key))
+        self._progress_dialog.open()
+        self._progress_dialog.raise_()
+
+    def _close_generation_progress(self) -> None:
+        if self._progress_dialog is not None:
+            self._progress_dialog.close()
+            self._progress_dialog.deleteLater()
+            self._progress_dialog = None
+
     def _select_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -547,6 +664,7 @@ class MainWindow(QMainWindow):
                 self._scene_transition_mode_requested = "global_extreme"
         self.generate_button.setEnabled(False)
         self._show_status("status_extracting")
+        self._show_generation_progress("status_extracting")
         self._extraction_worker = _ExtractionWorker(
             selected_file,
             self.seed,
@@ -588,6 +706,7 @@ class MainWindow(QMainWindow):
         essence_level_entries_changed: int,
         autorun_changed: bool,
     ) -> None:
+        self._close_generation_progress()
         self._chests_changed = chests_changed
         self._item_drops_changed = item_drops_changed
         self._equipment_drops_changed = equipment_drops_changed
@@ -621,6 +740,7 @@ class MainWindow(QMainWindow):
             return
 
         self._show_status("status_building")
+        self._show_generation_progress("status_building")
         self._build_worker = _BuildWorker(
             Path(extracted_directory),
             Path(output_directory),
@@ -630,8 +750,10 @@ class MainWindow(QMainWindow):
         self._build_worker.failed.connect(self._generation_failed)
         self._build_worker.start()
 
-    def _generation_succeeded(self, output_image: str) -> None:
-        # Keep extracted files temporarily so FIELD.BIN can be inspected.
+    def _generation_succeeded(
+        self, output_image: str, cleanup_error: str
+    ) -> None:
+        self._close_generation_progress()
         # Report completion and show where the image was saved.
         self.generate_button.setEnabled(True)
         self._show_status("status_image_built", 10000)
@@ -693,8 +815,17 @@ class MainWindow(QMainWindow):
                 summary=object_summary,
             ),
         )
+        if cleanup_error:
+            QMessageBox.warning(
+                self,
+                get_text("cleanup_failed_title"),
+                get_text("cleanup_failed_message").format(
+                    directory=cleanup_error
+                ),
+            )
 
     def _generation_failed(self, message: str) -> None:
+        self._close_generation_progress()
         self.generate_button.setEnabled(True)
         self._show_status("generation_failed_status", 10000)
         QMessageBox.critical(self, get_text("generation_failed_title"), message)

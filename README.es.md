@@ -69,7 +69,7 @@ Antes de extraer, RandLom busca el identificador norteamericano `SLUS_010.13` o 
 ## Pasos para generar una imagen modificada
 
 1. Inicia RandLom y, si lo necesitas, selecciona el idioma en **Idioma**.
-2. Selecciona una imagen de disco de Legend of Mana para PlayStation 1. El selector acepta `.cue`, `.bin`, `.iso`, `.img`, `.ccd`, `.chd`, `.mdf`, `.mds`, `.pbp`, `.toc` y `.cbn`. Para discos con varias pistas, selecciona el archivo CUE para que el extractor pueda acceder a todas.
+2. Selecciona una imagen de disco de Legend of Mana para PlayStation 1. El selector acepta `.cue`, `.bin` e `.img`. Para discos con varias pistas, selecciona el archivo CUE. Las imágenes raw `.bin` y `.img` deben tener sectores de 2352 bytes; las ISO convencionales con sectores de 2048 bytes no son compatibles con `dumpsxiso`.
 3. Si quieres, introduce una semilla numérica. Si la dejas vacía, RandLom generará y mostrará una automáticamente.
 4. Activa las secciones y opciones de aleatorización que quieras. En cambio entre escenas solo puedes seleccionar un modo.
    Si activas **Aleatorizar artefactos**, ten en cuenta que cambiar las recompensas de eventos puede afectar la progresión de la historia; consulta la advertencia anterior.
@@ -121,7 +121,7 @@ GitHub Actions construye la aplicación con Python **3.12** para:
 - Linux x64 (`RandLom-linux-x64.tar.gz`)
 - macOS ARM64 (`RandLom-macos-arm64.zip`)
 
-El selector muestra extensiones comunes de imágenes de PlayStation, pero la compatibilidad real depende de que el formato pueda ser leído por la versión de `dumpsxiso` incluida. Se recomiendan archivos CUE y BIN sin comprimir con sectores de 2352 bytes.
+El selector acepta `.cue`, `.bin` e `.img`. Selecciona un CUE para discos con varias pistas. Las imágenes raw BIN/IMG deben usar sectores de 2352 bytes; las ISO convencionales de 2048 bytes no son compatibles con `dumpsxiso`.
 
 ## Dependencias
 
