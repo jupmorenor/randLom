@@ -1,11 +1,9 @@
-
-*.pyc
-*.spec
-output
-__pycache__
-build
-*.bat
-README (Engine).md
-Readme (Tutorial).md
-Template (Amazing Mirror).py
-Template (Tutorial).py
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*mkpsxiso-*
+legend_of_mana*
+lom-decomp/*
