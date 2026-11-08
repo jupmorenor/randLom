@@ -802,20 +802,139 @@ def _apply_direct_artifact_grants(
     return any(old_id != new_id for _, old_id, new_id in replacements)
 
 
+_ARTIFACT_AWARD_PARAMETER_REFS = frozenset((0x7140, 0x7160))
+
+
+def _event_variable_assignment(
+    section: bytes, position: int
+) -> tuple[int | None, int | None, int, int] | None:
+    """Describe writes to event variables, returning (ref, value, offset, width)."""
+    opcode = section[position]
+    if opcode == 0x40 and position + 1 < len(section):
+        descriptor = section[position + 1]
+        cursor, destination, _ = _event_operand_end(
+            section, position + 2, descriptor & 0x0F, nibble=True
+        )
+        value_offset = cursor
+        _, value, width = _event_operand_end(
+            section, cursor, descriptor >> 4, nibble=True
+        )
+        return destination, value, value_offset, width
+
+    if opcode == 0x1B and position + 3 < len(section):
+        descriptor = section[position + 1]
+        destination = struct.unpack_from("<H", section, position + 2)[0]
+        value_offset = position + 4
+        _, value, width = _event_operand_end(
+            section, value_offset, descriptor & 0x03
+        )
+        return destination, value, value_offset, width
+
+    if opcode == 0x52 and position + 1 < len(section):
+        descriptor = section[position + 1]
+        _, destination, _ = _event_operand_end(
+            section, position + 2, descriptor & 0x0F, nibble=True
+        )
+        return destination, None, position + 2, 0
+
+    if opcode == 0x1C and position + 1 < len(section):
+        descriptor = section[position + 1]
+        cursor = position + 2
+        cursor, _, _ = _event_operand_end(
+            section, cursor, descriptor & 0x03
+        )
+        cursor, _, _ = _event_operand_end(
+            section, cursor, (descriptor >> 2) & 0x03
+        )
+        if cursor + 2 <= len(section):
+            destination = struct.unpack_from("<H", section, cursor)[0]
+            return destination, None, cursor, 0
+    return None
+
+
+def _artifact_award_parameter_sites(
+    section: bytes, section_start: int,
+    instructions: dict[int, tuple[int, int, list[int]]],
+) -> tuple[list[tuple[int, int, int]], set[int]]:
+    """Find literal artifact IDs passed to FIELD's award-land command.
+
+    Command 11 reads its first and second land IDs from runtime variable words
+    10 and 11 (references 0x7140 and 0x7160). Walk each straight-line block
+    backwards to its latest assignments so unrelated command parameters are
+    not mistaken for artifact rewards.
+    """
+    predecessors: dict[int, list[int]] = {}
+    instruction_starts = sorted(instructions)
+    overlapping_starts: set[int] = set()
+    owned_until = -1
+    for position in instruction_starts:
+        if position < owned_until:
+            overlapping_starts.add(position)
+            continue
+        owned_until = position + instructions[position][0]
+    for position, (size, _, successors) in instructions.items():
+        # Use the encoded instruction end for direct fallthrough predecessors.
+        if position not in overlapping_starts:
+            predecessors.setdefault(position + size, []).append(position)
+
+    sites: dict[int, tuple[int, int]] = {}
+    fixed_ids: set[int] = set()
+    for award_position, (size, opcode, _) in instructions.items():
+        if (opcode != 0x03 or award_position + 1 >= len(section)
+                or section[award_position + 1] != 11):
+            continue
+
+        resolved: set[int] = set()
+        cursor = award_position
+        for _ in range(64):
+            previous = predecessors.get(cursor, [])
+            if len(previous) != 1:
+                break
+            position = previous[0]
+            instruction_size, previous_opcode, successors = instructions[position]
+            if (len(successors) != 1
+                    or previous_opcode in (0x00, 0x01, 0x02, 0x03, 0x04,
+                                           0x05, 0x09, 0x0E, 0x10, 0x85)):
+                break
+
+            assignment = _event_variable_assignment(section, position)
+            if assignment is not None:
+                destination, value, value_offset, width = assignment
+                if (destination in _ARTIFACT_AWARD_PARAMETER_REFS
+                        and destination not in resolved):
+                    resolved.add(destination)
+                    if value in _SAFE_ARTIFACT_ID_SET:
+                        if width in (1, 2, 4):
+                            sites[section_start + value_offset] = (width, value)
+                        elif width == 0:
+                            # The value is encoded in the operand type itself,
+                            # so it cannot be changed without relocating code.
+                            fixed_ids.add(value)
+            if len(resolved) == len(_ARTIFACT_AWARD_PARAMETER_REFS):
+                break
+            cursor = position
+
+    return [
+        (offset, width, item_id)
+        for offset, (width, item_id) in sorted(sites.items())
+    ], fixed_ids
+
+
 def randomize_artifact_event_rewards(
     project_directory: str | Path, seed: int
 ) -> tuple[int, bytearray | None]:
-    """Permute eligible scene unlocks and FIELD's direct artifact grants.
+    """Apply one consistent artifact-ID permutation to unlocks and awards.
 
-    Scene unlocks are FIELD's ``make_land_available`` command (opcode 0x44,
-    subcommand 0x0F). Direct grants in FIELD's default-land routine are part of
-    the same pool. Mailbox (0x00), unnamed/unused/test IDs, and dynamic scene
-    operands are excluded. Returns the total changed destinations and an
-    already-decompressed FIELD buffer when direct-grant changes need writing.
+    This updates scene unlocks, the literal arguments consumed by FIELD's
+    ``award_land_artifacts`` command (opcode 0x03, command 11), and the direct
+    grants in FIELD. Keeping one ID mapping across those references is required
+    for an unlocked artifact to be the one the event later awards. Mailbox
+    (0x00), unnamed/unused/test IDs, and dynamic operands are excluded.
     """
     project = Path(project_directory).expanduser().resolve()
     ana = project / "ANA"
-    records: list[tuple[Path, int, int, int]] = []
+    scene_sites: dict[tuple[Path, int], tuple[int, int]] = {}
+    fixed_ids: set[int] = set()
 
     for scene_path in _scene_paths_from_manifest(project):
         if not scene_path.is_file() or scene_path.parent.parent.resolve() != ana:
@@ -839,6 +958,7 @@ def randomize_artifact_event_rewards(
         script_offsets = struct.unpack_from(f"<{table_size // 2}H", section)
         pending = [offset for offset in script_offsets if table_size <= offset < len(section)]
         visited: set[int] = set()
+        instructions: dict[int, tuple[int, int, list[int]]] = {}
 
         while pending:
             position = pending.pop()
@@ -853,8 +973,10 @@ def randomize_artifact_event_rewards(
                 continue
             if instruction_size <= 0:
                 continue
+            opcode = section[position]
+            instructions[position] = (instruction_size, opcode, successors)
 
-            if section[position] == 0x44 and position + 1 < len(section):
+            if opcode == 0x44 and position + 1 < len(section):
                 descriptor = section[position + 1]
                 operand_position = position + 2
                 try:
@@ -873,15 +995,24 @@ def randomize_artifact_event_rewards(
                     subcommand == 0x0F
                     and artifact_id is not None
                     and artifact_id in _SAFE_ARTIFACT_ID_SET
-                    and argument_width in (1, 2)
                 ):
-                    records.append(
-                        (scene_path, section_start + argument_offset, argument_width, artifact_id)
-                    )
+                    if argument_width in (1, 2, 4):
+                        scene_sites[(scene_path, section_start + argument_offset)] = (
+                            argument_width, artifact_id
+                        )
+                    elif argument_width == 0:
+                        fixed_ids.add(artifact_id)
 
             pending.extend(
                 target for target in successors if 0 <= target < len(section)
             )
+
+        award_sites, award_fixed_ids = _artifact_award_parameter_sites(
+            section, section_start, instructions
+        )
+        fixed_ids.update(award_fixed_ids)
+        for offset, width, artifact_id in award_sites:
+            scene_sites[(scene_path, offset)] = (width, artifact_id)
 
     field_overlay = project / "BIN" / "FIELD.BIN"
     if not field_overlay.is_file():
@@ -892,38 +1023,41 @@ def randomize_artifact_event_rewards(
     decompressed_field = _read_decompressed_field(field_overlay)
     direct_sites = _direct_artifact_grant_sites(decompressed_field, region)
 
-    original_values = [record[3] for record in records]
-    original_values.extend(artifact_id for _, artifact_id in direct_sites)
-    if len(original_values) < 2:
+    fixed_ids.intersection_update(_SAFE_ARTIFACT_ID_SET)
+    permutable_ids = [
+        artifact_id for artifact_id in _SAFE_ARTIFACT_IDS
+        if artifact_id not in fixed_ids
+    ]
+    if len(permutable_ids) < 2:
         return 0, None
 
-    shuffled_values = original_values.copy()
+    shuffled_ids = permutable_ids.copy()
     rng = random.Random(seed)
     for _ in range(512):
-        rng.shuffle(shuffled_values)
-        if shuffled_values != original_values:
+        rng.shuffle(shuffled_ids)
+        if shuffled_ids != permutable_ids:
             break
     else:
         return 0, None
+    artifact_mapping = dict(zip(permutable_ids, shuffled_ids))
+    artifact_mapping.update({artifact_id: artifact_id for artifact_id in fixed_ids})
 
     changed_by_path: dict[Path, bytearray] = {}
     changed = 0
-    for (scene_path, offset, width, old_value), new_value in zip(
-        records, shuffled_values[:len(records)]
-    ):
+    for (scene_path, offset), (width, old_value) in scene_sites.items():
+        new_value = artifact_mapping[old_value]
         if old_value == new_value:
             continue
         scene_data = changed_by_path.setdefault(
             scene_path, bytearray(scene_path.read_bytes())
         )
-        struct.pack_into("<B" if width == 1 else "<H", scene_data, offset, new_value)
+        format_code = {1: "<B", 2: "<H", 4: "<i"}[width]
+        struct.pack_into(format_code, scene_data, offset, new_value)
         changed += 1
 
     direct_replacements = tuple(
-        (address, old_id, new_id)
-        for (address, old_id), new_id in zip(
-            direct_sites, shuffled_values[len(records):]
-        )
+        (address, old_id, artifact_mapping[old_id])
+        for address, old_id in direct_sites
     )
     direct_changed = _apply_direct_artifact_grants(
         decompressed_field, region, direct_replacements
