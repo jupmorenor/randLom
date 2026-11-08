@@ -36,6 +36,19 @@ LANGUAGES = {
         "scene_local_return": "Local with return",
         "scene_global_return": "Global with return",
         "scene_global_extreme": "Global extreme",
+        "help_autorun": "Makes the character run by default; hold Circle to walk.",
+        "help_chests": "Replaces chest contents with safe item IDs from the game catalog.",
+        "help_item_drops": "Randomizes ordinary items dropped by enemies using the safe item pool.",
+        "help_equipment_drops": "Randomizes the primary material of weapons and armor dropped by enemies.",
+        "help_normal_shops": "Shuffles safe normal item IDs among existing shop slots; prices stay in their slots.",
+        "help_equipment_shops": "Changes materials of shop equipment and recalculates its derived values.",
+        "help_randomize_artifacts": "Shuffles eligible artifact grants from scenes and FIELD, excluding the Mailbox and unused records.",
+        "help_land_levels": "Shuffles the monster-level values assigned to land-distance ranks.",
+        "help_essence_levels": "Shuffles each spirit's initial strength values across the artifact table.",
+        "help_scene_local": "Shuffles compatible room destinations within each land; return doors are not paired.",
+        "help_scene_local_return": "Shuffles reciprocal room transitions within each land so the return door leads back.",
+        "help_scene_global_return": "Shuffles compatible transitions across lands while preserving a route back.",
+        "help_scene_global_extreme": "Shuffles compatible transitions game-wide, including world exits; return routes are not preserved.",
         "generate_button": "Generate",
         "generation_in_progress": "Generation in progress",
         "status_ready": "Ready",
@@ -174,6 +187,19 @@ LANGUAGES = {
         "scene_local_return": "Local con retorno",
         "scene_global_return": "Global con retorno",
         "scene_global_extreme": "Global extremo",
+        "help_autorun": "Hace que el personaje corra por defecto; mantén presionado Círculo para caminar.",
+        "help_chests": "Reemplaza el contenido de los cofres con IDs seguros del catálogo del juego.",
+        "help_item_drops": "Aleatoriza los objetos normales que dejan los enemigos usando el pool seguro.",
+        "help_equipment_drops": "Aleatoriza el material primario de las armas y armaduras que dejan los enemigos.",
+        "help_normal_shops": "Redistribuye IDs seguros de objetos normales entre los slots existentes; los precios permanecen en su lugar.",
+        "help_equipment_shops": "Cambia el material del equipamento en tiendas y recalcula sus valores derivados.",
+        "help_randomize_artifacts": "Permuta concesiones elegibles de escenas y FIELD; excluye el Mailbox y registros sin uso.",
+        "help_land_levels": "Permuta los niveles de monstruos asignados a cada rango de distancia de las tierras.",
+        "help_essence_levels": "Permuta los valores iniciales de cada espíritu entre los artefactos.",
+        "help_scene_local": "Permuta destinos de habitaciones compatibles dentro de cada tierra; no empareja las puertas de regreso.",
+        "help_scene_local_return": "Permuta transiciones recíprocas dentro de cada tierra para que la puerta de regreso vuelva al origen.",
+        "help_scene_global_return": "Permuta transiciones compatibles entre tierras y conserva una ruta de regreso.",
+        "help_scene_global_extreme": "Permuta transiciones compatibles de todo el juego, incluidas salidas al mapa; no conserva retornos.",
         "generate_button": "Generar",
         "generation_in_progress": "Generación en curso",
         "status_ready": "Listo",
@@ -279,7 +305,7 @@ LANGUAGES = {
     },
 }
 
-_selected_language = "es"
+_selected_language = "en"
 
 
 def set_language(language_code: str) -> None:

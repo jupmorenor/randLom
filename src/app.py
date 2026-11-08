@@ -312,7 +312,7 @@ class _BuildWorker(QThread):
             extracted_directory = self.extracted_directory.resolve()
             if extracted_directory == expected_directory and expected_directory.is_dir():
                 try:
-                    shutil.rmtree(expected_directory)
+                    pass #shutil.rmtree(expected_directory)
                 except OSError:
                     cleanup_error = str(expected_directory)
             elif extracted_directory.exists():
@@ -335,6 +335,7 @@ class MainWindow(QMainWindow):
         self._extraction_worker: _ExtractionWorker | None = None
         self._build_worker: _BuildWorker | None = None
         self._progress_dialog: _GenerationProgressDialog | None = None
+        self._option_help_buttons: list[tuple[QToolButton, str]] = []
         self.language_toolbar = QToolBar()
         self.language_toolbar.setMovable(False)
         self.addToolBar(self.language_toolbar)
@@ -396,9 +397,17 @@ class MainWindow(QMainWindow):
         self.randomize_equipment_drops_checkbox = QCheckBox(
             get_text("equipment_drops")
         )
-        object_randomization_layout.addWidget(self.randomize_chests_checkbox)
-        object_randomization_layout.addWidget(self.randomize_item_drops_checkbox)
-        object_randomization_layout.addWidget(self.randomize_equipment_drops_checkbox)
+        object_randomization_layout.addLayout(
+            self._help_option_row(self.randomize_chests_checkbox, "help_chests")
+        )
+        object_randomization_layout.addLayout(
+            self._help_option_row(self.randomize_item_drops_checkbox, "help_item_drops")
+        )
+        object_randomization_layout.addLayout(
+            self._help_option_row(
+                self.randomize_equipment_drops_checkbox, "help_equipment_drops"
+            )
+        )
         self.object_randomization_group.setVisible(False)
         self.randomize_objects_checkbox.toggled.connect(
             self.object_randomization_group.setVisible
@@ -413,8 +422,16 @@ class MainWindow(QMainWindow):
         self.randomize_equipment_shops_checkbox = QCheckBox(
             get_text("equipment_shops")
         )
-        shop_randomization_layout.addWidget(self.randomize_normal_shops_checkbox)
-        shop_randomization_layout.addWidget(self.randomize_equipment_shops_checkbox)
+        shop_randomization_layout.addLayout(
+            self._help_option_row(
+                self.randomize_normal_shops_checkbox, "help_normal_shops"
+            )
+        )
+        shop_randomization_layout.addLayout(
+            self._help_option_row(
+                self.randomize_equipment_shops_checkbox, "help_equipment_shops"
+            )
+        )
         self.shop_randomization_group.setVisible(False)
         self.randomize_shops_checkbox.toggled.connect(
             self.shop_randomization_group.setVisible
@@ -438,9 +455,21 @@ class MainWindow(QMainWindow):
         self.randomize_essence_levels_checkbox = QCheckBox(
             get_text("randomize_essence_levels")
         )
-        artifacts_and_lands_layout.addWidget(self.randomize_artifacts_checkbox)
-        artifacts_and_lands_layout.addWidget(self.randomize_land_levels_checkbox)
-        artifacts_and_lands_layout.addWidget(self.randomize_essence_levels_checkbox)
+        artifacts_and_lands_layout.addLayout(
+            self._help_option_row(
+                self.randomize_artifacts_checkbox, "help_randomize_artifacts"
+            )
+        )
+        artifacts_and_lands_layout.addLayout(
+            self._help_option_row(
+                self.randomize_land_levels_checkbox, "help_land_levels"
+            )
+        )
+        artifacts_and_lands_layout.addLayout(
+            self._help_option_row(
+                self.randomize_essence_levels_checkbox, "help_essence_levels"
+            )
+        )
         self.artifacts_and_lands_group.setVisible(False)
         self.artifacts_and_lands_checkbox.toggled.connect(
             self.artifacts_and_lands_group.setVisible
@@ -461,14 +490,17 @@ class MainWindow(QMainWindow):
         self.scene_change_global_extreme_radio = QRadioButton(
             get_text("scene_global_extreme")
         )
-        for radio_button in (
-            self.scene_change_local_radio,
-            self.scene_change_local_return_radio,
-            self.scene_change_global_return_radio,
-            self.scene_change_global_extreme_radio,
-        ):
+        scene_mode_options = (
+            (self.scene_change_local_radio, "help_scene_local"),
+            (self.scene_change_local_return_radio, "help_scene_local_return"),
+            (self.scene_change_global_return_radio, "help_scene_global_return"),
+            (self.scene_change_global_extreme_radio, "help_scene_global_extreme"),
+        )
+        for radio_button, help_key in scene_mode_options:
             self.scene_change_mode_group.addButton(radio_button)
-            scene_change_layout.addWidget(radio_button)
+            scene_change_layout.addLayout(
+                self._help_option_row(radio_button, help_key)
+            )
         self.scene_change_local_radio.setChecked(True)
         self.scene_change_group.setVisible(False)
         self.scene_change_checkbox.toggled.connect(
@@ -481,7 +513,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addLayout(file_layout)
         layout.addLayout(seed_layout)
-        layout.addWidget(self.autorun_checkbox)
+        layout.addLayout(self._help_option_row(self.autorun_checkbox, "help_autorun"))
         layout.addWidget(self.randomize_objects_checkbox)
         layout.addWidget(self.object_randomization_group)
         layout.addWidget(self.randomize_shops_checkbox)
@@ -498,6 +530,30 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         self._status_key = "status_ready"
         self.statusBar().showMessage(get_text(self._status_key))
+
+    def _help_option_row(
+        self, option: QWidget, tooltip_key: str
+    ) -> QHBoxLayout:
+        """Place a small question-mark tooltip button beside an option."""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(option)
+
+        help_button = QToolButton()
+        help_button.setText("?")
+        help_button.setFixedSize(18, 18)
+        help_button.setAutoRaise(True)
+        help_button.setCursor(Qt.CursorShape.WhatsThisCursor)
+        help_button.setToolTip(get_text(tooltip_key))
+        help_button.setStyleSheet(
+            "QToolButton { border: 1px solid palette(mid); border-radius: 9px; "
+            "font-weight: bold; padding: 0px; }"
+        )
+        row.addWidget(help_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addStretch(1)
+        self._option_help_buttons.append((help_button, tooltip_key))
+        return row
 
     def _select_language(self, language_code: str) -> None:
         set_language(language_code)
@@ -549,6 +605,8 @@ class MainWindow(QMainWindow):
         self.scene_change_global_extreme_radio.setText(
             get_text("scene_global_extreme")
         )
+        for help_button, tooltip_key in self._option_help_buttons:
+            help_button.setToolTip(get_text(tooltip_key))
         self.generate_button.setText(get_text("generate_button"))
         self.statusBar().showMessage(get_text(self._status_key))
 
