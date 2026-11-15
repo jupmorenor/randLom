@@ -50,6 +50,8 @@ _SAFE_ARTIFACT_IDS = (
 )
 _SAFE_ARTIFACT_ID_SET = frozenset(_SAFE_ARTIFACT_IDS)
 
+_SCENE_TRANSITION_DEBUG_PREFIXES = frozenset(("BTL", "DMY", "MID"))
+
 _FIELD_DIRECT_ARTIFACT_GRANTS = {
     "us": {
         "load_address": 0x8004FC70,
@@ -1116,6 +1118,11 @@ def randomize_local_scene_transitions(
         index: path for index, path in enumerate(manifest_scenes)
         if path.is_file() and path.parent.parent.resolve() == ana.resolve()
     }
+    eligible_scene_ids = {
+        scene_id for scene_id, path in scene_by_id.items()
+        if path.stem.split("_", 1)[0].upper()
+        not in _SCENE_TRANSITION_DEBUG_PREFIXES
+    }
     if not scene_by_id:
         raise RuntimeError(_error_message("error_manifest_field_scenes_missing"))
 
@@ -1126,13 +1133,14 @@ def randomize_local_scene_transitions(
     records: list[tuple[Path, int, int, int, str, int]] = []
     nodes_by_location: dict[str, list[int]] = {}
     for scene_id, path in scene_by_id.items():
-        if is_scene_group(path):
+        if scene_id in eligible_scene_ids and is_scene_group(path):
             location = path.stem.split("_", 1)[0].upper()
             if location:
                 nodes_by_location.setdefault(location, []).append(scene_id)
 
     for source_id, scene_path in scene_by_id.items():
-        if not scene_path.is_file() or not is_scene_group(scene_path):
+        if (source_id not in eligible_scene_ids or not scene_path.is_file()
+                or not is_scene_group(scene_path)):
             continue
         data = scene_path.read_bytes()
         if len(data) < 40:
@@ -1166,7 +1174,8 @@ def randomize_local_scene_transitions(
             for operand_offset, destination, operand_width in operands:
                 destination_id = destination & 0x7FFF
                 destination_path = scene_by_id.get(destination_id)
-                if destination_path is None or destination >= 0xFFFE:
+                if (destination_path is None or destination >= 0xFFFE
+                        or destination_id not in eligible_scene_ids):
                     continue
                 # The origin prefix defines the land: using the old target's
                 # prefix here could redirect a doorway across land boundaries.
@@ -1313,7 +1322,9 @@ def _randomize_scene_transitions_with_return(
     }
     if not scene_by_id:
         raise RuntimeError(_error_message("error_manifest_field_scenes_missing"))
-    non_land_prefixes = {"BTL", "DMY", "END", "INIT", "MID"}
+    non_land_prefixes = {
+        *_SCENE_TRANSITION_DEBUG_PREFIXES, "INIT"
+    }
 
     # Each record is one 0x85 instruction and its four operands: scene, object,
     # audio and spawn. A complete, compatible literal payload moves together.
@@ -1596,7 +1607,7 @@ def randomize_extreme_global_scene_transitions(
     if not scene_by_id:
         raise RuntimeError(_error_message("error_manifest_field_scenes_missing"))
 
-    excluded_prefixes = {"BTL", "DMY", "MID"}
+    excluded_prefixes = _SCENE_TRANSITION_DEBUG_PREFIXES
     prefix_by_scene = {
         scene_id: path.stem.split("_", 1)[0].upper()
         for scene_id, path in scene_by_id.items()
@@ -2093,11 +2104,21 @@ def _find_scene_equipment_drop_materials(data: bytes) -> list[int]:
 def randomize_equipment_drop_materials(
     project_directory: str | Path, seed: int
 ) -> int:
-    """Assign random primary materials to weapons/armor in drops."""
-    ana = Path(project_directory).expanduser().resolve() / "ANA"
+    """Assign materials to dropped weapons/armor and recalculate their values."""
+    project = Path(project_directory).expanduser().resolve()
+    ana = project / "ANA"
     if not ana.is_dir():
         raise FileNotFoundError(_error_message("error_ana_folder_missing", path=ana))
 
+    region = _detect_disc_region(project, project / "BIN")
+    item_table, instrument_table = _equipment_tables_from_scenes(ana)
+    material_table_offset = 4 + 32 * 0x0C
+    valid_materials = tuple(
+        material_id for material_id in _SAFE_PRIMARY_MATERIAL_IDS
+        if struct.unpack_from(
+            "<H", item_table, material_table_offset + material_id * 0x14 + 2
+        )[0] != 0
+    )
     rng = random.Random(seed)
     changed: dict[Path, bytearray] = {}
     count = 0
@@ -2112,11 +2133,27 @@ def randomize_equipment_drop_materials(
             mutable = bytearray(original)
             for offset in offsets:
                 info = struct.unpack_from("<I", mutable, offset)[0]
-                material = rng.choice(_SAFE_PRIMARY_MATERIAL_IDS)
+                category = (info >> 8) & 0x3
+                item_type = (info >> 10) & 0x3F
+                if category not in (0, 1) or item_type >= 16:
+                    continue
+                current_material = (info >> 16) & 0x3F
+                candidates = tuple(
+                    material_id for material_id in valid_materials
+                    if material_id != current_material
+                )
+                if not candidates:
+                    continue
+                material = rng.choice(candidates)
                 info = (info & ~(0x3F << 16)) | (material << 16)
                 struct.pack_into("<I", mutable, offset, info)
+                _recalculate_equipment_item(
+                    mutable, offset - 0x14, info, material,
+                    item_table, instrument_table, region=region,
+                )
                 count += 1
-            changed[path] = mutable
+            if mutable != original:
+                changed[path] = mutable
 
     if not count:
         raise RuntimeError(_error_message("error_no_equipment_drops"))
@@ -2355,6 +2392,8 @@ def _recalculate_equipment_item(
     material: int,
     item_table: bytes,
     instrument_table: bytes,
+    *,
+    region: str = "us",
 ) -> None:
     """Update material-dependent values according to the FIELD routines."""
     category = (info >> 8) & 0x3
@@ -2387,8 +2426,9 @@ def _recalculate_equipment_item(
         bonus_levels = struct.unpack_from("<I", data, record_offset + 0x18)[0]
         level_sum = sum((bonus_levels >> shift) & 0xF for shift in range(0, 32, 4))
         power = ((weight * (level_sum + divisor) // divisor) >> 7) & 0xFFFF
-        # US FIELD clamps derived weapon power at 999.
-        if power >= 1000:
+        # The North American FIELD caps derived weapon power at 999; the
+        # Japanese version leaves the value uncapped.
+        if region != "jp" and power >= 1000:
             power = 999
         struct.pack_into("<H", data, record_offset + 0x24, power)
         for index, (factor, multiplier) in enumerate(zip(type_factors, multipliers)):
@@ -2399,7 +2439,7 @@ def _recalculate_equipment_item(
         zip(type_weights, multipliers, type_factors)
     ):
         value = (weight * multiplier) >> 6
-        if value >= 1000:
+        if region != "jp" and value >= 1000:
             value = 999
         struct.pack_into("<H", data, record_offset + 0x24 + index * 2, value)
         data[record_offset + 0x30 + index] = (factor * multiplier) >> 6
@@ -2413,6 +2453,7 @@ def randomize_equipment_shop_materials(
     if not ana.is_dir():
         raise FileNotFoundError(_error_message("error_ana_folder_missing", path=ana))
 
+    region = _detect_disc_region(ana.parent, ana.parent / "BIN")
     item_table, instrument_table = _equipment_tables_from_scenes(ana)
     rng = random.Random(seed)
     changed_files: dict[Path, bytearray] = {}
@@ -2495,7 +2536,7 @@ def randomize_equipment_shop_materials(
                 struct.pack_into("<I", changed_files[path], offset, info)
                 _recalculate_equipment_item(
                     changed_files[path], offset - 0x14, info, material,
-                    item_table, instrument_table,
+                    item_table, instrument_table, region=region,
                 )
 
     count = sum(len(offsets) for offsets in material_offsets.values())
