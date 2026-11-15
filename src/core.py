@@ -704,6 +704,84 @@ def _decode_event_instruction(
     return position - start, scene_operands, successors
 
 
+def _event_scene_changes_after_story_actions(section: bytes) -> set[int]:
+    """Find scene changes reachable after dialogue, combat, or progress actions.
+
+    The result contains instruction offsets relative to the event-script section.
+    This deliberately favors preserving an ambiguous scripted transition over
+    randomizing it as if it were an ordinary doorway.
+    """
+    if len(section) < 2:
+        return set()
+    table_size = struct.unpack_from("<H", section)[0]
+    if table_size < 2 or table_size % 2 or table_size > len(section):
+        return set()
+    entries = struct.unpack_from(f"<{table_size // 2}H", section)
+    pending = [offset for offset in entries if table_size <= offset < len(section)]
+    instructions: dict[int, tuple[int, tuple[int, ...]]] = {}
+
+    def is_story_action(position: int, opcode: int) -> bool:
+        if opcode in (0x10, 0x11, 0x1E, 0x33):
+            # Dynamic event call, talk, start battle, or show text.
+            return True
+        if opcode == 0x03 and position + 1 < len(section):
+            # FIELD commands: award artifacts and spawn a monster.
+            return section[position + 1] in (11, 15)
+        if opcode == 0x44 and position + 2 < len(section):
+            # Misc commands that complete or advance story/gameplay state.
+            descriptor = section[position + 1]
+            try:
+                _, subcommand, _ = _event_operand_end(
+                    section, position + 2, descriptor & 0x0F, nibble=True
+                )
+            except (IndexError, struct.error, ValueError):
+                return False
+            return subcommand in (0x02, 0x06, 0x0D, 0x0F, 0x13, 0x18,
+                                  0x29, 0x37, 0x38, 0x39, 0x3B)
+        return False
+
+    visited: set[int] = set()
+    while pending:
+        position = pending.pop()
+        if position in visited or not 0 <= position < len(section):
+            continue
+        visited.add(position)
+        try:
+            size, _, successors = _decode_event_instruction(section, position)
+        except (IndexError, struct.error, ValueError):
+            continue
+        if size <= 0:
+            continue
+        valid_successors = tuple(
+            target for target in successors if 0 <= target < len(section)
+        )
+        instructions[position] = (section[position], valid_successors)
+        pending.extend(valid_successors)
+
+    pending = [
+        target
+        for position, (opcode, successors) in instructions.items()
+        if is_story_action(position, opcode)
+        for target in successors
+    ]
+    visited.clear()
+    protected: set[int] = set()
+    while pending:
+        position = pending.pop()
+        if position in visited:
+            continue
+        visited.add(position)
+        instruction = instructions.get(position)
+        if instruction is None:
+            continue
+        opcode, successors = instruction
+        if opcode == 0x85:
+            protected.add(position)
+            continue
+        pending.extend(successors)
+    return protected
+
+
 def _scene_paths_from_manifest(project_directory: Path) -> list[Path]:
     """Use mkpsxiso's preserved directory order as the FIELD scene resource order."""
     manifest = project_directory / "legend_of_mana.xml"
@@ -1102,14 +1180,15 @@ def _connected_components(
 def randomize_local_scene_transitions(
     project_directory: str | Path, seed: int
 ) -> int:
-    """Randomize room links within their source land without splitting room groups.
+    """Randomize ordinary room links within their source land.
 
     Scene IDs come from the ISO manifest's directory order. Destinations must
     remain in the source scene's three-letter land prefix. World-map and
     cross-land destinations are preserved. Destinations are permuted only
     within their original weakly connected room group, and each accepted
-    permutation is checked to keep that group connected. Every room retains
-    its original number of outgoing transitions and every land exit remains.
+    permutation is checked to keep that group connected. A room is only a new
+    destination when it has an ordinary same-land exit. Scripted transitions
+    reachable after story actions are preserved.
     """
     project = Path(project_directory).expanduser().resolve()
     ana = project / "ANA"
@@ -1152,6 +1231,7 @@ def randomize_local_scene_transitions(
             continue
         section_start, section_end = offsets[1], offsets[2]
         section = data[section_start:section_end]
+        protected_transitions = _event_scene_changes_after_story_actions(section)
         if len(section) < 2:
             continue
         table_size = struct.unpack_from("<H", section)[0]
@@ -1172,6 +1252,8 @@ def randomize_local_scene_transitions(
             if instruction_size <= 0:
                 continue
             for operand_offset, destination, operand_width in operands:
+                if pos in protected_transitions:
+                    continue
                 destination_id = destination & 0x7FFF
                 destination_path = scene_by_id.get(destination_id)
                 if (destination_path is None or destination >= 0xFFFE
@@ -1188,6 +1270,12 @@ def randomize_local_scene_transitions(
 
     if not records:
         raise RuntimeError(_error_message("error_no_local_scene_transitions"))
+
+    scenes_with_local_exits: dict[str, set[int]] = {}
+    for _, _, destination, source_id, location, width in records:
+        destination_id = destination & 0x7FFF
+        if width in (1, 2) and destination_id in nodes_by_location.get(location, ()):
+            scenes_with_local_exits.setdefault(location, set()).add(source_id)
 
     adjacency_by_location: dict[str, dict[int, set[int]]] = {}
     for index, (_, _, old_destination, source_id, location, operand_width) in enumerate(records):
@@ -1212,11 +1300,13 @@ def randomize_local_scene_transitions(
     for index, (_, _, old_destination, source_id, location, operand_width) in enumerate(records):
         destination_id = old_destination & 0x7FFF
         components = component_by_location.get(location, {})
-        if operand_width not in (1, 2) or components.get(source_id) != components.get(destination_id):
+        if (operand_width not in (1, 2)
+                or components.get(source_id) != components.get(destination_id)):
             continue
         component_id = components[source_id]
         edge_indexes_by_component.setdefault((location, component_id), []).append(index)
-        edge_groups.setdefault((location, component_id, operand_width), []).append(index)
+        if destination_id in scenes_with_local_exits.get(location, set()):
+            edge_groups.setdefault((location, component_id, operand_width), []).append(index)
 
     targets = [record[2] & 0x7FFF for record in records]
     for (location, component_id, operand_width), indexes in edge_groups.items():
@@ -1302,14 +1392,15 @@ def randomize_local_scene_transitions_with_return(
 def _randomize_scene_transitions_with_return(
     project_directory: str | Path, seed: int, local_only: bool
 ) -> int:
-    """Shuffle paired doorway links, optionally restricting swaps to one land.
+    """Shuffle paired ordinary doorway links, optionally restricting one land.
 
     A reciprocal pair is accepted only when a scene has exactly one literal
     transition to the other scene and that scene has exactly one literal
     transition back. Two pairs are rewired together: each entry receives the
     destination parameters of the counterpart doorway, including its object,
     audio and spawn values. This makes the doorway reached on arrival point back
-    through the paired transition. Ambiguous or dynamic transitions are kept.
+    through the paired transition. Ambiguous, dynamic, and scripted event
+    transitions are kept.
     """
     project = Path(project_directory).expanduser().resolve()
     ana = project / "ANA"
@@ -1348,6 +1439,7 @@ def _randomize_scene_transitions_with_return(
             continue
         section_start, section_end = offsets[1], offsets[2]
         section = data[section_start:section_end]
+        protected_transitions = _event_scene_changes_after_story_actions(section)
         if len(section) < 2:
             continue
         table_size = struct.unpack_from("<H", section)[0]
@@ -1379,7 +1471,7 @@ def _randomize_scene_transitions_with_return(
                         and prefix_by_scene[target_id] not in non_land_prefixes
                         and (not local_only or same_land)):
                     connectivity_edges.append((source_id, target_id))
-            if section[pos] == 0x85:
+            if section[pos] == 0x85 and pos not in protected_transitions:
                 descriptor_start = pos + 1
                 if descriptor_start + 2 > len(section):
                     continue
@@ -1592,8 +1684,9 @@ def randomize_extreme_global_scene_transitions(
     link is created. Literal destinations may point to any indexed scene, the
     world map (0xFFFF), or the title screen (0xFFFE). Scenes with BTL, DMY or
     MID filename prefixes are excluded as both transition sources and ordinary
-    scene destinations. Dynamic operands and payloads whose operand formats do
-    not match another transition are left untouched.
+    scene destinations. A scene is only a destination when it has an ordinary
+    outgoing transition. Scripted transitions reachable after story actions,
+    dynamic operands, and incompatible payloads are left untouched.
     """
     project = Path(project_directory).expanduser().resolve()
     ana = project / "ANA"
@@ -1631,6 +1724,7 @@ def randomize_extreme_global_scene_transitions(
             continue
         section_start, section_end = offsets[1], offsets[2]
         section = data[section_start:section_end]
+        protected_transitions = _event_scene_changes_after_story_actions(section)
         if len(section) < 2:
             continue
         table_size = struct.unpack_from("<H", section)[0]
@@ -1652,7 +1746,7 @@ def randomize_extreme_global_scene_transitions(
             if instruction_size <= 0:
                 continue
 
-            if section[pos] == 0x85:
+            if section[pos] == 0x85 and pos not in protected_transitions:
                 descriptor_start = pos + 1
                 if descriptor_start + 2 > len(section):
                     continue
@@ -1708,22 +1802,35 @@ def randomize_extreme_global_scene_transitions(
     if not records:
         raise RuntimeError(_error_message("error_no_global_scene_transitions"))
 
+    scenes_with_exits = {
+        source_id for source_id, _, fields, _ in records
+        if fields[0][1] == 0xFFFF
+        or (fields[0][1] is not None
+            and (fields[0][1] & 0x7FFF) in scene_by_id
+            and prefix_by_scene[fields[0][1] & 0x7FFF] not in excluded_prefixes)
+    }
     rng = random.Random(seed)
     payload_for_record: dict[int, int] = {}
     for indexes in groups.values():
-        if len(indexes) < 2:
+        eligible_indexes = [
+            index for index in indexes
+            if records[index][2][0][1] == 0xFFFF
+            or (records[index][2][0][1] is not None
+                and (records[index][2][0][1] & 0x7FFF) in scenes_with_exits)
+        ]
+        if len(eligible_indexes) < 2:
             continue
-        shuffled_payloads = indexes.copy()
+        shuffled_payloads = eligible_indexes.copy()
         rng.shuffle(shuffled_payloads)
         # Avoid leaving a whole group untouched when a derangement is possible.
         for _ in range(10):
             if any(
                 records[index][2][0][3] != records[payload][2][0][3]
-                for index, payload in zip(indexes, shuffled_payloads)
+                for index, payload in zip(eligible_indexes, shuffled_payloads)
             ):
                 break
             rng.shuffle(shuffled_payloads)
-        payload_for_record.update(zip(indexes, shuffled_payloads))
+        payload_for_record.update(zip(eligible_indexes, shuffled_payloads))
 
     changed_by_path: dict[Path, bytearray] = {}
     changed = 0
